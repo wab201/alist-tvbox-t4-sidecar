@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+config.local.json
+secrets/
+
+# Runtime output
+*.log
+logs/
+coverage.xml
+htmlcov/
+tests/reports/
+
+# IDE and OS files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini

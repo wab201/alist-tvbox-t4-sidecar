@@ -1,0 +1,14 @@
+{
+  "sources": [
+    {
+      "id": "at-main",
+      "name": "AT main subscription",
+      "status": "configured",
+      "capabilities": [],
+      "at_base_url": "http://at:4567",
+      "subscription_id": "0",
+      "subscription_token": "replace-with-at-subscription-token",
+      "subscription_url": null
+    }
+  ]
+}
