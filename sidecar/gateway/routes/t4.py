@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from sidecar.at.subscription import SubscriptionParseError
+from sidecar.at.native import NativeAtUnsupportedError
 from sidecar.gateway.auth import gateway_token_matches
 from sidecar.gateway.config import Settings
 from sidecar.gateway.source_registry import SourceRegistry
@@ -42,6 +43,10 @@ def build_t4_router(
                 body = {}
             if isinstance(body, dict):
                 params.update(body)
+        params.pop("t4_token", None)
+        client_name = request.headers.get("X-CLIENT")
+        if client_name and "client" not in params:
+            params["client"] = client_name
 
         source_id = str(params.pop("source", "") or "")
         if not source_id:
@@ -63,6 +68,14 @@ def build_t4_router(
             raise HTTPException(
                 status_code=400,
                 detail={"code": "t4_request_invalid", "message": str(exc)},
+            ) from exc
+        except NativeAtUnsupportedError as exc:
+            raise HTTPException(
+                status_code=501,
+                detail={
+                    "code": "t4_builtin_unsupported",
+                    "message": str(exc),
+                },
             ) from exc
         except Exception as exc:
             raise HTTPException(

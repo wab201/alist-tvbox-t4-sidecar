@@ -73,7 +73,7 @@ def test_parser_decodes_at_ext_and_classifies_plugin_without_public_secrets() ->
     assert "private-secret" not in json.dumps(snapshot.public_metadata())
 
 
-def test_parser_classifies_raw_python_and_keeps_builtin_out_of_plugins() -> None:
+def test_parser_classifies_raw_python_and_keeps_builtin_native_plugin() -> None:
     parser = SubscriptionParser(AT_BASE)
     snapshot = parser.parse(
         "demo",
@@ -93,8 +93,101 @@ def test_parser_classifies_raw_python_and_keeps_builtin_out_of_plugins() -> None
         },
     )
 
-    assert [item.plugin_type for item in snapshot.plugins] == ["raw_python"]
+    assert [item.plugin_type for item in snapshot.plugins] == ["builtin", "raw_python"]
     assert snapshot.site_count == 2
+
+
+def test_builtin_metadata_exposes_route_without_native_credentials() -> None:
+    parser = SubscriptionParser(AT_BASE)
+    snapshot = parser.parse(
+        "demo",
+        {
+            "sites": [
+                {
+                    "key": "csp_BiliBili",
+                    "name": "BiliBili",
+                    "api": "csp_BiliBili",
+                    "ext": encoded_ext(
+                        {
+                            "api": AT_BASE,
+                            "token": "private-token",
+                            "secret": "private-secret",
+                            "uid": "private-uid",
+                        }
+                    ),
+                }
+            ]
+        },
+    )
+
+    metadata = snapshot.public_metadata()["plugins"][0]
+    assert metadata["native_route"] == "/bilibili"
+    assert metadata["capabilities"] == [
+        "home",
+        "category",
+        "search",
+        "detail",
+        "play",
+    ]
+    assert "private-token" not in json.dumps(metadata)
+    assert "private-secret" not in json.dumps(metadata)
+    assert "private-uid" not in json.dumps(metadata)
+
+
+def test_parser_marks_page_and_client_local_builtins_without_claiming_t4_support() -> None:
+    parser = SubscriptionParser(AT_BASE)
+    snapshot = parser.parse(
+        "demo",
+        {
+            "sites": [
+                {
+                    "key": "home",
+                    "name": "WebHome",
+                    "api": "csp_WebHome",
+                    "homePage": "https://home.example/",
+                },
+                {
+                    "key": "push_agent",
+                    "name": "Push",
+                    "api": "csp_Push",
+                },
+                {
+                    "key": "nostr",
+                    "name": "Nostr",
+                    "api": "csp_Nostr",
+                    "homePage": "https://nostr.example/",
+                },
+            ]
+        },
+    )
+
+    metadata = {item["id"]: item for item in snapshot.public_metadata()["plugins"]}
+    assert metadata["home"]["t4_supported"] is False
+    assert metadata["home"]["compatibility_mode"] == "page_entry_only"
+    assert metadata["home"]["page_entry"] is True
+    assert metadata["push_agent"]["compatibility_mode"] == "client_local_only"
+    assert metadata["push_agent"]["capabilities"] == []
+    assert metadata["nostr"]["page_entry"] is True
+    assert snapshot.plugin_for("csp_Push").plugin_id == "push_agent"
+
+
+def test_parser_maps_telegram_builtins_to_their_original_server_routes() -> None:
+    parser = SubscriptionParser(AT_BASE)
+    snapshot = parser.parse(
+        "demo",
+        {
+            "sites": [
+                {"key": "web", "api": "csp_TgWeb"},
+                {"key": "channel", "api": "csp_TgChannel"},
+            ]
+        },
+    )
+
+    routes = {
+        item["id"]: item["native_route"]
+        for item in snapshot.public_metadata()["plugins"]
+    }
+    assert routes == {"web": "/tg-search", "channel": "/tgsc"}
 
 
 def test_parser_accepts_legacy_same_origin_atvp_loader() -> None:

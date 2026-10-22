@@ -14,6 +14,7 @@ from sidecar.gateway.routes.subscriptions import (
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
+from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter
 from sidecar.worker.client import WorkerConfig, WorkerPool
 
@@ -49,14 +50,17 @@ def create_app(
                 )
             )
     worker_pool: WorkerPool | None = None
+    native_client: NativeAtClient | None = None
     if t4_adapter is None:
         worker_pool = WorkerPool(
             WorkerConfig(request_timeout=runtime_settings.worker_timeout)
         )
+        native_client = NativeAtClient(timeout=runtime_settings.worker_timeout)
         runtime_adapter = T4Adapter(
             runtime_sources,
             AtvpWorkerInvoker(worker_pool),
             subscription_fetcher=subscription_fetcher,
+            native_invoker=NativeAtInvoker(native_client),
         )
     else:
         runtime_adapter = t4_adapter
@@ -67,6 +71,8 @@ def create_app(
                 yield
             finally:
                 worker_pool.close()
+                if native_client is not None:
+                    native_client.close()
     else:
         lifespan = None
 
