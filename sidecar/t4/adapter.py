@@ -26,6 +26,17 @@ class WorkerInvoker(Protocol):
         ...
 
 
+class NativeInvoker(Protocol):
+    def call(
+        self,
+        runtime_key: str,
+        plugin: PluginDescriptor,
+        method: str,
+        params: dict[str, Any],
+    ) -> Any:
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class T4Request:
     module: str
@@ -42,9 +53,11 @@ class T4Adapter:
         *,
         subscription_fetcher: SubscriptionFetcher | None = None,
         opaque_ids: OpaqueIdStore | None = None,
+        native_invoker: NativeInvoker | None = None,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
+        self._native = native_invoker
         self._fetcher = subscription_fetcher
         self._opaque_ids = opaque_ids or OpaqueIdStore()
 
@@ -61,12 +74,13 @@ class T4Adapter:
             source.source_id,
             plugin.plugin_id,
         )
-        result = self._worker.call(
-            f"{request.source_id}:{plugin.plugin_id}",
-            plugin,
-            method,
-            params,
-        )
+        runtime_key = f"{request.source_id}:{plugin.plugin_id}"
+        if plugin.plugin_type == "builtin":
+            if self._native is None:
+                raise SubscriptionParseError("native bridge is not configured")
+            result = self._native.call(runtime_key, plugin, method, params)
+        else:
+            result = self._worker.call(runtime_key, plugin, method, params)
         return self._normalize(
             request.module,
             result,
@@ -92,9 +106,9 @@ class T4Adapter:
                 )
                 for value in output.get("ids", [])
             ]
-        elif module == "play":
+        elif module in {"play", "action"}:
             output["id"] = self.unwrap_id(
-                str(output.get("id") or ""),
+                str(output.get("id") or output.get("play") or ""),
                 source_id=source_id,
                 plugin_id=plugin_id,
                 kind="play",
@@ -104,7 +118,10 @@ class T4Adapter:
     @staticmethod
     def _translate(module: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if module == "home":
-            return "home", {"filter": _bool_param(params.get("filter"), True)}
+            return "home", {
+                "filter": _bool_param(params.get("filter"), True),
+                "client": str(params.get("client") or ""),
+            }
         if module == "category":
             return (
                 "category",
@@ -113,6 +130,17 @@ class T4Adapter:
                     "pg": str(params.get("pg") or "1"),
                     "filter": _bool_param(params.get("filter"), True),
                     "extend": _json_or_text(params.get("extend", "")),
+                    "native_filter": _filter_map(params),
+                    "sort": params.get("sort"),
+                    "size": params.get("size"),
+                    "depth": params.get("depth"),
+                    "type": params.get("type"),
+                    "ac": params.get("ac"),
+                    "client": str(params.get("client") or ""),
+                    "platform": params.get("platform"),
+                    "year": params.get("year"),
+                    "genre": params.get("genre"),
+                    "region": params.get("region"),
                 },
             )
         if module == "search":
@@ -122,6 +150,9 @@ class T4Adapter:
                     "key": str(params.get("wd") or params.get("key") or ""),
                     "quick": _bool_param(params.get("quick"), True),
                     "pg": str(params.get("pg") or "1"),
+                    "native_filter": _filter_map(params),
+                    "client": str(params.get("client") or ""),
+                    "size": params.get("size"),
                 },
             )
         if module == "detail":
@@ -131,7 +162,13 @@ class T4Adapter:
                 if isinstance(raw_ids, list)
                 else [value for value in str(raw_ids).split(",") if value]
             )
-            return "detail", {"ids": ids}
+            return "detail", {
+                "ids": ids,
+                "ac": params.get("ac"),
+                "depth": params.get("depth"),
+                "title": params.get("title"),
+                "client": str(params.get("client") or ""),
+            }
         if module == "play":
             return (
                 "play",
@@ -139,6 +176,22 @@ class T4Adapter:
                     "flag": str(params.get("flag") or ""),
                     "id": str(params.get("play") or params.get("id") or ""),
                     "vip_flags": _json_or_text(params.get("vipFlags", [])),
+                    "client": str(params.get("client") or ""),
+                    "dash": _bool_param(params.get("dash"), False),
+                    "from": str(params.get("from") or ""),
+                    "type": str(params.get("type") or ""),
+                    "t": params.get("t"),
+                },
+            )
+        if module == "action":
+            return (
+                "action",
+                {
+                    "action": str(params.get("action") or ""),
+                    "id": str(params.get("id") or params.get("play") or ""),
+                    "client": str(params.get("client") or ""),
+                    "from": str(params.get("from") or ""),
+                    "type": str(params.get("type") or ""),
                 },
             )
         raise SubscriptionParseError(f"unsupported T4 module: {module}")
@@ -165,7 +218,7 @@ class T4Adapter:
             else:
                 payload["list"] = []
             return payload
-        if module == "play":
+        if module in {"play", "action"}:
             return self._normalize_play(result)
         raise SubscriptionParseError(f"unsupported T4 module: {module}")
 
@@ -274,3 +327,23 @@ def _json_or_text(value: Any) -> Any:
         return json.loads(str(value))
     except json.JSONDecodeError:
         return str(value)
+
+
+def _filter_map(params: dict[str, Any]) -> dict[str, Any]:
+    candidates = (params.get("filters"), params.get("filter"), params.get("extend"))
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return dict(candidate)
+        if isinstance(candidate, str) and candidate.strip():
+            try:
+                decoded = json.loads(candidate)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                return decoded
+
+    values: dict[str, Any] = {}
+    for key, value in params.items():
+        if key.startswith("filter.") and value not in (None, ""):
+            values[key[7:]] = value
+    return values

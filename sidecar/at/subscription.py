@@ -30,10 +30,15 @@ class PluginDescriptor:
     local_proxy_config: Any
     data: Any
     filters: tuple[dict[str, Any], ...]
+    backend_api: str = ""
+    playback_token: str = ""
+    playback_config_url: str = ""
+    uid: str = ""
+    home_page: str = ""
 
     def worker_extend(self) -> str:
         payload: dict[str, Any] = {
-            "api": self.api,
+            "api": self.backend_api or self.api,
             "source": self.source,
             "loader": self.loader,
             "raw": self.raw,
@@ -49,7 +54,7 @@ class PluginDescriptor:
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
     def public_metadata(self) -> dict[str, Any]:
-        return {
+        metadata = {
             "id": self.plugin_id,
             "name": self.name,
             "type": self.plugin_type,
@@ -57,6 +62,51 @@ class PluginDescriptor:
             "raw": self.raw,
             "filters": len(self.filters),
         }
+        if self.plugin_type == "builtin":
+            route = _builtin_route(self.api)
+            if route:
+                metadata["native_route"] = route
+                capabilities = ["home", "category", "search", "detail", "play"]
+                if self.api == "csp_Media":
+                    capabilities.append("action")
+                metadata["capabilities"] = capabilities
+            elif self.api == "csp_Push":
+                metadata.update(
+                    {
+                        "t4_supported": False,
+                        "compatibility_mode": "client_local_only",
+                        "capabilities": [],
+                        "unsupported_reason": (
+                            "csp_Push is implemented by the original Android client "
+                            "and has no AT server VOD route"
+                        ),
+                    }
+                )
+            elif self.api in {"csp_WebHome", "csp_Nostr"}:
+                metadata.update(
+                    {
+                        "t4_supported": False,
+                        "compatibility_mode": "page_entry_only",
+                        "page_entry": bool(self.home_page),
+                        "capabilities": [],
+                        "unsupported_reason": (
+                            "this source is a page entry, not a standard AT VOD service"
+                        ),
+                    }
+                )
+            else:
+                metadata.update(
+                    {
+                        "t4_supported": False,
+                        "compatibility_mode": "unmapped_builtin",
+                        "capabilities": [],
+                        "unsupported_reason": (
+                            "the subscription contains a builtin source without "
+                            "a known AT server route"
+                        ),
+                    }
+                )
+        return metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +127,11 @@ class SubscriptionSnapshot:
     def plugin_for(self, plugin_id: str | None) -> PluginDescriptor:
         if plugin_id:
             for plugin in self.plugins:
-                if plugin.plugin_id == plugin_id or plugin.name == plugin_id:
+                if (
+                    plugin.plugin_id == plugin_id
+                    or plugin.name == plugin_id
+                    or plugin.api == plugin_id
+                ):
                     return plugin
             raise SubscriptionParseError("requested plugin was not found")
         if len(self.plugins) == 1:
@@ -171,7 +225,28 @@ def _classify_plugin(api: str, source: str, raw: bool, loader: str) -> str:
         return "secspider"
     if source or loader:
         return "unsupported_plugin"
-    return "builtin"
+    if not api or api.startswith("csp_"):
+        return "builtin"
+    return "unsupported_plugin"
+
+
+def _builtin_route(api: str) -> str | None:
+    return {
+        "csp_BiliBili": "/bilibili",
+        "csp_Media": "/media",
+        "csp_AList": "/vod",
+        "csp_XiaoYa": "/vod",
+        "csp_PianDan": "/pian-dan",
+        "csp_Live": "/live",
+        "csp_Emby": "/emby",
+        "csp_Jellyfin": "/jellyfin",
+        "csp_FeiNiu": "/feiniu",
+        "csp_FishPanSou": "/pansou",
+        "csp_FishPanSouGroup": "/pansou",
+        "csp_TgDouBan": "/tg-db",
+        "csp_TgChannel": "/tgsc",
+        "csp_TgWeb": "/tg-search",
+    }.get(api)
 
 
 class SubscriptionParser:
@@ -194,7 +269,7 @@ class SubscriptionParser:
             except SubscriptionParseError as exc:
                 errors.append(f"site[{index}]: {exc}")
                 continue
-            if descriptor.plugin_type != "builtin":
+            if descriptor.plugin_type in {"raw_python", "secspider", "builtin"}:
                 plugins.append(descriptor)
 
         return SubscriptionSnapshot(
@@ -218,6 +293,10 @@ class SubscriptionParser:
             _validate_loader(loader, self._at_base_url)
         if source and not source.startswith(("http://", "https://")):
             raise SubscriptionParseError("plugin source must be an absolute http(s) URL")
+        backend_api = str(ext.get("api") or self._at_base_url).strip().rstrip("/")
+        _validate_http_url(backend_api, label="AT backend api")
+        if not _same_origin(backend_api, self._at_base_url):
+            raise SubscriptionParseError("AT backend api is outside the configured AT origin")
 
         name = str(site.get("name") or site.get("key") or f"site-{index}")
         plugin_id = str(site.get("key") or f"site-{index}")
@@ -240,6 +319,11 @@ class SubscriptionParser:
             local_proxy_config=ext.get("local_proxy_config"),
             data=ext.get("data"),
             filters=filter_entries,
+            backend_api=backend_api,
+            playback_token=str(ext.get("playbackToken") or ""),
+            playback_config_url=str(ext.get("playbackConfigUrl") or ""),
+            uid=str(ext.get("uid") or ""),
+            home_page=str(site.get("homePage") or "").strip(),
         )
 
 

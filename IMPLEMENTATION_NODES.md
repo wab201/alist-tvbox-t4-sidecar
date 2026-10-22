@@ -22,6 +22,7 @@
 | M6 | T4 home/category/search/detail/play 适配层 | 通过 | GET/POST 等价，播放 ID 不泄露凭据 |
 | M7 | `/t4/` 独立 Web 入口 | 通过 | source、能力、冒烟测试和配置地址可用 |
 | M8 | 容器、反向代理和授权真实回归 | 进行中 | AT 零修改，分类、详情、播放闭环 |
+| M9 | AT 内置源原生桥接 | 通过 | 已完成服务端内置源的原生路由、参数和播放桥接；客户端本地/页面型源单独标记边界 |
 
 ## M0 方案和证据台账
 
@@ -42,7 +43,7 @@
 1. 独立 Sidecar，不修改 AT 核心、JAR、数据库和原始插件。
 2. Gateway 与 Worker 分进程，Worker 不在 FastAPI 主进程执行插件。
 3. 自定义 secspider 优先使用 AT 动态 `Atvp/{token}/{version}.py` loader，只有不可用时才使用只读 keyring 回退。
-4. 第一阶段只读实现 `home/category/search/detail/play`，不做 action、History 和 WebHome 通用转换。
+4. 第一阶段先完成 `home/category/search/detail/play`；通用管理 action、History 和 WebHome 转换后置，Media 原版 `/play` 伪动作由 M9 原生桥接覆盖。
 5. 公开播放 ID 使用 opaque 包装，不包含 AT token、secret、ext 或原始插件地址。
 
 **验证**
@@ -377,3 +378,52 @@ python -m pytest -q tests/integration
 **失败记录**
 
 - 暂无。
+
+## M9 AT 内置源原生桥接
+
+**输入**
+
+- 真实授权 AT 订阅中的 builtin descriptor。
+- 原版 AT `BiliBiliController`、`PlayController`、`TvBoxController` 和内置 Media 路由证据。
+
+**代码范围**
+
+- `sidecar/at/subscription.py`
+- `sidecar/at/native.py`
+- `sidecar/t4/adapter.py`
+- `sidecar/gateway/main.py`
+- `sidecar/gateway/routes/t4.py`
+- `tests/at/`
+- `tests/t4/`
+
+**实现**
+
+- 保留 builtin descriptor，不再从 `SubscriptionSnapshot` 丢弃。
+- 根据 `api` 映射 AT 原生 `/vod`、`/bilibili`、`/media`、`/pian-dan`、`/live`、`/emby`、`/feiniu`、`/pansou` 等路由。
+- Bilibili 详情/播放沿用 `ids`、`bvid`，保留 `header`、字幕、弹幕、章节和清晰度结果。
+- Media 详情使用原生 `id=msub:*`，分集和伪动作 ID 通过 `/play` 处理。
+- Telegram 频道使用 `/tgsc`，Telegram 网页使用 `/tg-search` 并固定透传 `web=true`；Telegram 详情保留 `id/ac/title`。
+- 直播播放使用 `/live-play`；Bilibili、Media 和原生播放器请求继续透传 `X-CLIENT`。
+- 详情 ID 和播放 ID 仍由 Sidecar opaque 化，token、secret、uid、播放原始 ID 不出 T4 响应。
+
+**验证**
+
+```powershell
+python -m pytest -q
+python -m compileall -q sidecar tests
+git diff --check
+```
+
+真实订阅只读回归：
+
+- 178 个站点、18 个 builtin、43 个 raw Python、116 个 secspider，解析错误 0。
+- Bilibili：首页、分类、搜索、详情、播放通过；播放字段保留 `header/subs/danmaku/chapters`。
+- Media：首页、分类、搜索、详情、分集和追更动作通过；播放字段保留 `playUrl/type`。
+- TgWeb：首页、分类、搜索、详情、播放通过；TgChannel 首页、分类、搜索通过。
+- TgDouBan、Live 首页/分类/搜索完成只读回归；Feiniu 搜索受 AT 上游 400 配置状态影响，未将上游错误误判为桥接成功。
+- `csp_Push` 标记为 `client_local_only`，`csp_WebHome`/`csp_Nostr` 标记为 `page_entry_only`，不伪造标准 T4 能力。
+
+**边界**
+
+- AT 管理 API、Bilibili 登录二维码/Cookie 管理、播放同步管理面和 WebHome 注入不是订阅 T4 模块，由原版 AT 继续负责。
+- `csp_Push` 的字幕发现、YouTube、DASH、网盘离线下载等 Android 本地逻辑不属于 AT 服务端路由，Sidecar 不宣称已移植这些客户端实现。

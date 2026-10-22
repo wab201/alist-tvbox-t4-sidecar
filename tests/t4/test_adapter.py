@@ -40,6 +40,32 @@ class FakeWorker:
         return {"list": []}
 
 
+class FakeNative:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def call(self, runtime_key, plugin, method, params):
+        self.calls.append((runtime_key, method, params))
+        if method == "home":
+            return {
+                "class": [{"type_id": "follow:1"}],
+                "list": [{"vod_id": "native-home"}],
+            }
+        if method == "detail":
+            return {
+                "list": [
+                    {
+                        "vod_id": params["ids"][0],
+                        "vod_play_from": "BiliBili",
+                        "vod_play_url": "正片$native-play",
+                    }
+                ]
+            }
+        if method == "play":
+            return {"parse": 0, "url": "https://video.invalid/native.m3u8"}
+        return {"list": []}
+
+
 def descriptor() -> PluginDescriptor:
     return PluginDescriptor(
         plugin_id="demo",
@@ -163,3 +189,77 @@ def test_t4_route_supports_get_and_post() -> None:
     assert query_response.status_code == 200
     assert get_response.json()["list"][0]["vod_id"].startswith("t4_")
     assert post_response.json()["list"][0]["vod_id"].startswith("t4_")
+
+
+async def builtin_fetcher(_source):
+    return {
+        "sites": [
+            {
+                "key": "csp_BiliBili",
+                "name": "BiliBili",
+                "api": "csp_BiliBili",
+                "ext": {
+                    "api": "https://at.example",
+                    "token": "native-token",
+                },
+            }
+        ]
+    }
+
+
+def test_t4_adapter_routes_builtin_to_native_invoker() -> None:
+    native = FakeNative()
+    adapter = T4Adapter(
+        SourceRegistry((source(),)),
+        FakeWorker(),
+        subscription_fetcher=builtin_fetcher,
+        native_invoker=native,
+    )
+
+    home = asyncio.run(adapter.dispatch(T4Request("home", "source-a", None, {})))
+    opaque_detail_id = home["list"][0]["vod_id"]
+    detail = asyncio.run(
+        adapter.dispatch(
+            T4Request("detail", "source-a", "csp_BiliBili", {"ids": opaque_detail_id})
+        )
+    )
+    opaque_play_id = detail["list"][0]["vod_play_url"].split("$", 1)[1]
+    play = asyncio.run(
+        adapter.dispatch(
+            T4Request("play", "source-a", "csp_BiliBili", {"play": opaque_play_id})
+        )
+    )
+
+    assert play["url"].endswith(".m3u8")
+    assert native.calls[0][1] == "home"
+    assert native.calls[1][2]["ids"] == ["native-home"]
+    assert native.calls[2][2]["id"] == "native-play"
+
+
+def test_t4_adapter_forwards_client_and_telegram_detail_context() -> None:
+    native = FakeNative()
+    adapter = T4Adapter(
+        SourceRegistry((source(),)),
+        FakeWorker(),
+        subscription_fetcher=lambda _source: builtin_fetcher(_source),
+        native_invoker=native,
+    )
+
+    asyncio.run(
+        adapter.dispatch(
+            T4Request(
+                "detail",
+                "source-a",
+                "csp_BiliBili",
+                {
+                    "ids": "recommend",
+                    "ac": "detail",
+                    "title": "Demo",
+                    "client": "com.fongmi.android.tv",
+                },
+            )
+        )
+    )
+
+    assert native.calls[0][2]["client"] == "com.fongmi.android.tv"
+    assert native.calls[0][2]["ids"] == ["recommend"]

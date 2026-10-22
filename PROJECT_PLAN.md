@@ -98,7 +98,7 @@ AT 页面中的独立 T4 入口只实现以下功能：
 - 在 AT JVM 请求线程中运行 Python。
 - 在 Sidecar 主进程中直接 `exec` 任意插件。
 - 插件运行时自动 `pip install`。
-- `csp_WebHome` 页面型插件的通用服务端转换。
+- `csp_WebHome`、`csp_Nostr` 页面型入口的通用 VOD 服务端转换；Sidecar 只记录页面能力，不伪造 T4 VOD 结果。
 - 任意第三方依赖的自动下载和执行。
 - action、追剧写回、History、播放同步。
 - 多租户后台和用户级权限模型。
@@ -114,8 +114,9 @@ AT 页面中的独立 T4 入口只实现以下功能：
 | 自定义 `secspider/1` | 支持 | 优先执行 AT 动态 loader，必要时只读挂载 keyring | keyring 不进入 Git、不返回客户端 |
 | AT 过滤器 | 支持 | 随 `Atvp.py` 在 Worker 内加载 | 只读执行，失败策略可配置 |
 | `csp_PyProxy` | 支持 | 由 `Atvp.py` 转换为 Worker 插件任务 | 禁止直接透传成公共 Python 服务 |
-| `csp_WebHome` | 暂不支持 | 不进入第一期 Worker | 返回 `unsupported_plugin` |
-| AT 原生 Java/网盘站点 | 旁路支持 | 可选调用 AT `/vod`、`/play` | 不等同于 Python 插件执行 |
+| `csp_WebHome` / `csp_Nostr` | 页面入口 | 能力快照标记 `page_entry_only` | 不等同于标准 T4 VOD |
+| `csp_Push` | 客户端本地 | 能力快照标记 `client_local_only` | 不等同于 AT 服务端 `/vod`、`/play` |
+| AT 原生 Java/网盘站点 | 旁路支持 | 调用 AT 原生 `/vod`、`/play` 等路由 | 不等同于 Python 插件执行 |
 | 外部依赖未打包插件 | 暂不支持 | 不在线安装依赖 | 返回缺失依赖诊断 |
 
 ### 3.1 自定义加密插件的关键前提
@@ -574,7 +575,7 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 9. 做官方插件、自定义插件、GET/POST、超时和真实播放回归。
 10. 最后接入反向代理并完成非侵入验收。
 
-任何插件如果依赖 `csp_WebHome`、未打包依赖或未授权外部资源，第一期只记录能力状态，不扩大 Worker 权限。
+任何插件如果依赖页面型入口、客户端本地能力、未打包依赖或未授权外部资源，第一期只记录能力状态，不扩大 Worker 权限。
 
 ## 13. 项目决策
 
@@ -584,7 +585,7 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 - **T4 Gateway 不直接解释 Python 业务，只负责调度 Worker 和转换响应。**
 - **自定义 secspider 优先复用 AT 动态下发的 Atvp loader；只读 keyring 仅作为部署回退，不通过 Web 暴露密钥。**
 - **AT Web 页面入口优先用反向代理 `/t4/`，不把 Sidecar 依赖写入 AT 构建产物。**
-- **第一期只做只读浏览和播放，action、History、WebHome 和多租户后置。**
+- **第一期先做只读浏览和播放；通用管理 action、History、WebHome 和多租户后置，Media 原版 `/play` 伪动作由内置源原生桥接覆盖。**
 
 ## 14. 源码证据映射
 
