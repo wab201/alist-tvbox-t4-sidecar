@@ -38,6 +38,16 @@ docker compose up --build -d t4-sidecar
 使用文件 source 时，再复制并挂载 `config/sources.example.json` 的副本。
 需要同源入口时，在已有 AT 反向代理中把 `/t4/` 转发到 Sidecar 的 `8765` 端口；不要改 AT JAR、数据库或前端构建产物。
 
+仓库包含 `.github/workflows/container.yml`，推送到 `main` 后由 GitHub Actions
+构建并发布 GHCR 镜像：
+
+```text
+ghcr.io/wab201/alist-tvbox-t4-sidecar:latest
+```
+
+`ALIST_TVBOX_SUBSCRIPTION_URL`、`T4_GATEWAY_TOKEN` 等运行时变量只在部署环境注入，
+不会写入镜像层或 GitHub Actions 日志。
+
 ## T4 调用
 
 请求头推荐使用 `X-T4-Token`。不能设置请求头的客户端可使用 `t4_token` 查询参数。
