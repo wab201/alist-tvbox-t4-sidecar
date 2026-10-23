@@ -55,6 +55,8 @@
     .badge { color: var(--muted); font-size: 12px; }
     .plugin-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
     .plugin-note { margin-top: 6px; }
+    .fm-entry { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 10px; }
+    .fm-entry code { overflow-wrap: anywhere; color: var(--text); }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .snapshot { margin-top: 12px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f8fafc; padding: 10px; overflow: auto; }
     .empty { color: var(--muted); padding: 12px 0; }
@@ -62,7 +64,7 @@
       header { display: block; }
       header .muted { margin-top: 5px; }
       .controls { grid-template-columns: 1fr; }
-      .entry-grid, .plugin-controls { grid-template-columns: 1fr; }
+      .entry-grid, .plugin-controls, .fm-entry { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -100,7 +102,7 @@
       <li>在 NAS 项目目录的 <code>.env</code> 中找到 <code>T4_GATEWAY_TOKEN</code>，填入下方输入框后点击“加载”。</li>
       <li>在每个 source 中点击“读取能力”，页面会读取脱敏后的订阅信息并列出可用插件。</li>
       <li>选择要调用的插件；多插件订阅必须选择对应的 <code>site</code>，例如 <code>csp_BiliBili</code> 或 <code>csp_Media</code>。</li>
-      <li>点击“首页冒烟”验证当前插件，或点击“复制 T4 地址”获取不含令牌的首页调用地址。</li>
+      <li>点击“首页冒烟”验证当前插件，或点击“复制 FM 地址”获取该插件的 FM 兼容入口。</li>
     </ol>
     <div class="notice">
       Token 只临时保存在当前浏览器标签页的 <code>sessionStorage</code> 中。复制的地址不包含 Token；
@@ -189,9 +191,14 @@
           <button data-action="snapshot">读取能力</button>
         </div>
         <div class="badge plugin-note" data-role="plugin-note">多插件订阅必须指定 site</div>
+        <div class="fm-entry">
+          <span class="badge">FM兼容地址</span>
+          <code data-role="fm-link">读取能力后自动生成</code>
+          <button data-action="copy-fm" disabled>复制 FM 地址</button>
+        </div>
         <div class="actions">
           <button data-action="smoke" disabled>首页冒烟</button>
-          <button data-action="copy" disabled>复制 T4 地址</button>
+          <button data-action="copy" disabled>复制首页测试地址</button>
         </div>
         <pre class="snapshot" hidden></pre>`;
       article.querySelector("h2").textContent = source.name;
@@ -202,12 +209,21 @@
       const pluginNote = article.querySelector('[data-role="plugin-note"]');
       const smokeButton = article.querySelector('[data-action="smoke"]');
       const copyButton = article.querySelector('[data-action="copy"]');
+      const copyFmButton = article.querySelector('[data-action="copy-fm"]');
+      const fmLinkNode = article.querySelector('[data-role="fm-link"]');
       const snapshot = article.querySelector(".snapshot");
       const selectedPlugin = () => pluginSelect.value || "";
+      const selectedPluginInfo = () =>
+        (source.plugins || []).find((item) => item.id === selectedPlugin());
       const updateActionState = () => {
-        const enabled = Boolean(selectedPlugin());
+        const plugin = selectedPluginInfo();
+        const enabled = Boolean(plugin && plugin.t4_supported !== false);
         smokeButton.disabled = !enabled;
         copyButton.disabled = !enabled;
+        copyFmButton.disabled = !plugin?.fm_path;
+        fmLinkNode.textContent = plugin?.fm_path
+          ? new URL(plugin.fm_path, location.origin).href
+          : "读取能力后选择支持标准 T4 的插件";
       };
       const renderPlugins = (plugins) => {
         pluginSelect.replaceChildren();
@@ -278,7 +294,7 @@
       };
       article.querySelector('[data-action="snapshot"]').onclick = loadCapabilities;
       pluginSelect.onchange = () => {
-        const plugin = (source.plugins || []).find((item) => item.id === pluginSelect.value);
+        const plugin = selectedPluginInfo();
         pluginNote.textContent = plugin
           ? `${plugin.name} · ${plugin.id} · ${(plugin.capabilities || []).join(", ") || "无标准 T4 能力"}`
           : "多插件订阅必须指定 site";
@@ -305,6 +321,16 @@
         try {
           await copyText(url);
           setStatus("T4 地址已复制；请通过 X-T4-Token 请求头携带令牌", "ok");
+        } catch (error) {
+          setStatus(error.message, "error");
+        }
+      };
+      copyFmButton.onclick = async () => {
+        const plugin = selectedPluginInfo();
+        if (!plugin?.fm_path) return;
+        try {
+          await copyText(new URL(plugin.fm_path, location.origin).href);
+          setStatus("FM 兼容地址已复制，可直接添加到 FM 影视", "ok");
         } catch (error) {
           setStatus(error.message, "error");
         }

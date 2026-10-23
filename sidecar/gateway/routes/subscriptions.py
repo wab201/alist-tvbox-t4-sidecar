@@ -7,6 +7,7 @@ from fastapi import APIRouter, Header, HTTPException
 from sidecar.at.subscription import SubscriptionParseError, SubscriptionFetcher, resolve_subscription
 from sidecar.gateway.auth import gateway_token_matches
 from sidecar.gateway.config import Settings
+from sidecar.gateway.fm import build_fm_path
 from sidecar.gateway.source_registry import SourceRegistry
 
 
@@ -41,6 +42,14 @@ def build_subscriptions_router(
                 status_code=502,
                 detail={"code": "subscription_unavailable", "message": str(exc)},
             ) from exc
-        return snapshot.public_metadata()
+        metadata = snapshot.public_metadata()
+        for plugin in metadata["plugins"]:
+            if plugin.get("t4_supported", True) is not False:
+                plugin["fm_path"] = build_fm_path(
+                    settings.gateway_token,
+                    source_id,
+                    str(plugin["id"]),
+                )
+        return metadata
 
     return router

@@ -346,6 +346,9 @@ def test_subscription_route_returns_redacted_snapshot() -> None:
 
     assert response.status_code == 200
     assert response.json()["plugins"][0]["type"] == "raw_python"
+    assert response.json()["plugins"][0]["fm_path"].startswith(
+        "/t4/fm/demo/RawPlugin/"
+    )
     assert "token-value" not in response.text
 
 
