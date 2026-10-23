@@ -10,7 +10,7 @@ services:
       T4_SOURCES_FILE: ${T4_SOURCES_FILE:-/app/config/sources.json}
     ports:
       - "${T4_PORT:-8765}:8765"
-    volumes:
+    volumes: []
       # Optional custom secspider keyring fallback. Keep this file read-only.
       # - ./secrets/atvp-keyring.json:/run/secrets/atvp-keyring.json:ro
       # Optional file-based source registry. Uncomment when not using the
