@@ -37,6 +37,32 @@ Sidecar 只负责 T4 转译和转发，不替代 AT 管理面。AT 登录、Cook
 
 内置源的列表、搜索、详情和播放复用 AT 原生服务端。Media 的追更动作通过 `/t4/api/action` 复用 AT `/play`。`csp_Push` 是 Android 客户端本地能力，`csp_WebHome` 和 `csp_Nostr` 是页面入口，能力快照会明确标记为非标准 T4，不伪造空 VOD 结果。
 
+## Web 管理界面
+
+Sidecar 自带独立的中文 Web 管理入口，不需要修改 AT 原页面：
+
+```text
+http://NAS_IP:8765/t4/
+```
+
+页面使用步骤：
+
+1. 打开上面的地址，确认页面右上角健康状态正常。
+2. 在 NAS 项目目录 `.env` 中取出 `T4_GATEWAY_TOKEN`，填入页面后点击“加载”。
+3. 在对应 source 中点击“读取能力”，查看订阅解析出的插件列表。
+4. 选择要使用的插件 `site`。多插件订阅必须选择，例如 `csp_BiliBili`、`csp_Media`。
+5. 点击“首页冒烟”验证插件；验证通过后点击“复制 T4 地址”获取不含令牌的接口地址。
+
+页面中的 `env-at` 是使用 `ALIST_TVBOX_SUBSCRIPTION_URL` 时自动生成的默认 source ID。页面只展示脱敏后的插件能力，不展示订阅令牌、插件 secret、keyring 或原始播放 ID。Gateway Token 仅临时保存在当前浏览器标签页，生产环境应通过 `X-T4-Token` 请求头传递，不要把令牌写进公开 URL。
+
+健康检查地址为：
+
+```text
+http://NAS_IP:8765/t4/health
+```
+
+如果启用了可选的 Nginx profile，独立代理入口为 `http://NAS_IP:8766/t4/`；同源 AT 入口需要由现有反向代理转发到 Sidecar，仓库不会自动改动 AT 的反向代理配置。
+
 ## 配置变量
 
 | 变量 | 必填 | 说明 |
@@ -99,16 +125,24 @@ docker compose up --build -d t4-sidecar
 
 ## T4 调用示例
 
-请求头推荐使用 `X-T4-Token`，不能设置请求头的客户端可使用 `t4_token` 查询参数：
+请求头推荐使用 `X-T4-Token`。下面示例中的 `<T4地址>` 是 `http://NAS_IP:8765`，`source=env-at` 是环境变量订阅的默认 source ID。
 当一个 AT 订阅包含多个插件时，必须通过 `site` 指定插件；下面以 `csp_BiliBili` 为例。
 
 ```text
-/t4/api/home?source=env-at&site=csp_BiliBili
-/t4/api/category?source=env-at&site=csp_BiliBili&t=all&pg=1
-/t4/api/search?source=env-at&site=csp_BiliBili&wd=关键词&pg=1
-/t4/api/detail?source=env-at&site=csp_BiliBili&ids=<opaque-id>
-/t4/api/play?source=env-at&site=csp_BiliBili&flag=<flag>&play=<opaque-id>
-/t4/api/action?source=env-at&site=csp_Media&action=inspect&id=<opaque-id>
+GET <T4地址>/t4/api/home?source=env-at&site=csp_BiliBili
+GET <T4地址>/t4/api/category?source=env-at&site=csp_BiliBili&t=all&pg=1
+GET <T4地址>/t4/api/search?source=env-at&site=csp_BiliBili&wd=关键词&pg=1
+GET <T4地址>/t4/api/detail?source=env-at&site=csp_BiliBili&ids=<opaque-id>
+GET <T4地址>/t4/api/play?source=env-at&site=csp_BiliBili&flag=<flag>&play=<opaque-id>
+POST <T4地址>/t4/api/action?source=env-at&site=csp_Media&action=inspect&id=<opaque-id>
 ```
+
+请求头：
+
+```http
+X-T4-Token: 你的T4_GATEWAY_TOKEN
+```
+
+不能设置请求头的客户端可以使用 `t4_token` 查询参数，但它可能进入浏览器历史、反向代理日志和访问日志，不建议用于公网地址。
 
 完整订阅 token、插件 secret、keyring 和原始播放 ID 不会出现在 T4 响应中。
