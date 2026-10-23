@@ -14,6 +14,7 @@ from sidecar.gateway.routes.subscriptions import (
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
+from sidecar.gateway.routes.fm import build_fm_router
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter
 from sidecar.worker.client import WorkerConfig, WorkerPool
@@ -93,6 +94,9 @@ def create_app(
         )
     )
     app.include_router(build_t4_router(runtime_settings, runtime_sources, runtime_adapter))
+    app.include_router(
+        build_fm_router(runtime_settings, runtime_sources, runtime_adapter)
+    )
     app.include_router(build_web_router())
     return app
 

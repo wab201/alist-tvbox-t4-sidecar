@@ -51,7 +51,7 @@ http://NAS_IP:8765/t4/
 2. 在 NAS 项目目录 `.env` 中取出 `T4_GATEWAY_TOKEN`，填入页面后点击“加载”。
 3. 在对应 source 中点击“读取能力”，查看订阅解析出的插件列表。
 4. 选择要使用的插件 `site`。多插件订阅必须选择，例如 `csp_BiliBili`、`csp_Media`。
-5. 点击“首页冒烟”验证插件；验证通过后点击“复制 T4 地址”获取不含令牌的接口地址。
+5. 点击“首页冒烟”验证插件；验证通过后点击“复制 FM 地址”，即可把该插件的兼容入口添加到 FM 影视。
 
 页面中的 `env-at` 是使用 `ALIST_TVBOX_SUBSCRIPTION_URL` 时自动生成的默认 source ID。页面只展示脱敏后的插件能力，不展示订阅令牌、插件 secret、keyring 或原始播放 ID。Gateway Token 仅临时保存在当前浏览器标签页，生产环境应通过 `X-T4-Token` 请求头传递，不要把令牌写进公开 URL。
 
@@ -143,6 +143,6 @@ POST <T4地址>/t4/api/action?source=env-at&site=csp_Media&action=inspect&id=<op
 X-T4-Token: 你的T4_GATEWAY_TOKEN
 ```
 
-不能设置请求头的客户端可以使用 `t4_token` 查询参数，但它可能进入浏览器历史、反向代理日志和访问日志，不建议用于公网地址。
+不能设置请求头的客户端可以使用 Web 页面生成的 FM 兼容地址。该地址已经绑定 source 和插件，不需要客户端额外填写 `source`、`site` 或 Gateway Token，但它本身属于访问凭证，不要公开分享。直接调用底层 T4 API 时，仍可使用 `t4_token` 查询参数，但它可能进入浏览器历史、反向代理日志和访问日志，不建议用于公网地址。
 
 完整订阅 token、插件 secret、keyring 和原始播放 ID 不会出现在 T4 响应中。
