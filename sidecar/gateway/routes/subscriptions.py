@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -15,6 +15,9 @@ def build_subscriptions_router(
     settings: Settings,
     source_registry: SourceRegistry,
     fetcher: SubscriptionFetcher | None = None,
+    *,
+    subscription_resolver: Any | None = None,
+    local_snapshot_provider: Any | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -36,7 +39,14 @@ def build_subscriptions_router(
                 detail={"code": "source_not_found", "message": "source not found"},
             )
         try:
-            snapshot = await resolve_subscription(source, fetcher)
+            snapshot = None
+            if local_snapshot_provider is not None:
+                snapshot = local_snapshot_provider(source_id)
+            if snapshot is None:
+                if subscription_resolver is not None:
+                    snapshot = await subscription_resolver(source)
+                else:
+                    snapshot = await resolve_subscription(source, fetcher)
         except SubscriptionParseError as exc:
             raise HTTPException(
                 status_code=502,

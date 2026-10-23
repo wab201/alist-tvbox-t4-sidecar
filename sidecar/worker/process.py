@@ -148,6 +148,17 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                 request_id,
                 error={"code": "plugin_play_failed", "message": str(exc)},
             )
+    if method == "action":
+        try:
+            return _response(
+                request_id,
+                result=ATVP_RUNTIME.action(str(params.get("action", ""))),
+            )
+        except AtvpRuntimeError as exc:
+            return _response(
+                request_id,
+                error={"code": "plugin_action_failed", "message": str(exc)},
+            )
     return _response(
         request_id,
         error={"code": "unsupported_method", "message": method},

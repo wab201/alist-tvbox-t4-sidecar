@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlsplit
@@ -382,3 +384,45 @@ async def resolve_subscription(
     subscription_url = build_subscription_url(source)
     at_base_url = source.at_base_url or _origin_url(subscription_url)
     return SubscriptionParser(at_base_url).parse(source.source_id, payload)
+
+
+class CachedSubscriptionResolver:
+    """Share short-lived subscription snapshots across API and T4 requests."""
+
+    def __init__(
+        self,
+        fetcher: SubscriptionFetcher | None = None,
+        *,
+        ttl: float = 30.0,
+    ) -> None:
+        self._fetcher = fetcher
+        self._ttl = max(0.0, ttl)
+        self._cache: dict[str, tuple[float, SubscriptionSnapshot]] = {}
+        self._inflight: dict[str, asyncio.Task[SubscriptionSnapshot]] = {}
+
+    async def resolve(self, source: SourceConfig) -> SubscriptionSnapshot:
+        now = time.monotonic()
+        cached = self._cache.get(source.source_id)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+        task = self._inflight.get(source.source_id)
+        if task is None:
+            task = asyncio.create_task(
+                resolve_subscription(source, self._fetcher)
+            )
+            self._inflight[source.source_id] = task
+        try:
+            snapshot = await task
+        finally:
+            if self._inflight.get(source.source_id) is task:
+                self._inflight.pop(source.source_id, None)
+        if self._ttl > 0:
+            self._cache[source.source_id] = (time.monotonic() + self._ttl, snapshot)
+        return snapshot
+
+    def invalidate(self, source_id: str | None = None) -> None:
+        if source_id is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(source_id, None)

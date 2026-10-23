@@ -30,6 +30,19 @@ class SourceRegistry:
     def __init__(self, sources: tuple[SourceConfig, ...] = ()) -> None:
         self._sources = sources
 
+    def upsert(self, source: SourceConfig) -> None:
+        self._sources = tuple(
+            source if item.source_id == source.source_id else item
+            for item in self._sources
+        )
+        if not any(item.source_id == source.source_id for item in self._sources):
+            self._sources += (source,)
+
+    def remove(self, source_id: str) -> None:
+        self._sources = tuple(
+            item for item in self._sources if item.source_id != source_id
+        )
+
     @classmethod
     def from_file(cls, path: str | None) -> "SourceRegistry":
         if not path:

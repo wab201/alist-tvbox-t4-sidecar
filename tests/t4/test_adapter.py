@@ -1,8 +1,9 @@
 import asyncio
+import threading
 
 from fastapi.testclient import TestClient
 
-from sidecar.at.subscription import PluginDescriptor
+from sidecar.at.subscription import PluginDescriptor, SubscriptionSnapshot
 from sidecar.gateway.config import Settings
 from sidecar.gateway.main import create_app
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
@@ -213,6 +214,38 @@ def test_t4_route_is_open_in_local_mode() -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_adapter_runs_blocking_worker_calls_off_event_loop() -> None:
+    barrier = threading.Barrier(2)
+
+    class BarrierWorker:
+        def call(self, runtime_key, plugin, method, params):
+            if method == "home":
+                barrier.wait(timeout=2)
+            return {"list": []}
+
+    snapshot = SubscriptionSnapshot(
+        source_id="source-a",
+        site_count=1,
+        plugins=(descriptor(),),
+    )
+    adapter = T4Adapter(
+        SourceRegistry((source(),)),
+        BarrierWorker(),
+        local_snapshot_provider=lambda _source_id: snapshot,
+    )
+
+    async def run() -> None:
+        await asyncio.wait_for(
+            asyncio.gather(
+                adapter.dispatch(T4Request("home", "source-a", "demo", {})),
+                adapter.dispatch(T4Request("home", "source-a", "demo", {})),
+            ),
+            timeout=3,
+        )
+
+    asyncio.run(run())
 
 
 async def builtin_fetcher(_source):

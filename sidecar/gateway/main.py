@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from sidecar.at.subscription import CachedSubscriptionResolver
 from sidecar.gateway.config import Settings
 from sidecar.gateway.routes.health import build_health_router
 from sidecar.gateway.routes.sources import build_sources_router
@@ -15,6 +16,8 @@ from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
 from sidecar.gateway.routes.fm import build_fm_router
+from sidecar.gateway.routes.uploads import build_uploads_router
+from sidecar.gateway.uploads import UploadedPluginStore
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter
 from sidecar.worker.client import WorkerConfig, WorkerPool
@@ -50,6 +53,16 @@ def create_app(
                     ),
                 )
             )
+    upload_store = UploadedPluginStore(
+        runtime_settings.plugin_dir,
+        max_bytes=runtime_settings.upload_max_bytes,
+    )
+    if upload_store.has_plugins():
+        runtime_sources.upsert(upload_store.source_config)
+    subscription_resolver = CachedSubscriptionResolver(
+        subscription_fetcher,
+        ttl=runtime_settings.subscription_cache_ttl,
+    )
     worker_pool: WorkerPool | None = None
     native_client: NativeAtClient | None = None
     if t4_adapter is None:
@@ -61,6 +74,8 @@ def create_app(
             runtime_sources,
             AtvpWorkerInvoker(worker_pool),
             subscription_fetcher=subscription_fetcher,
+            subscription_resolver=subscription_resolver.resolve,
+            local_snapshot_provider=upload_store.snapshot_for,
             native_invoker=NativeAtInvoker(native_client),
         )
     else:
@@ -91,11 +106,16 @@ def create_app(
             runtime_settings,
             runtime_sources,
             subscription_fetcher,
+            subscription_resolver=subscription_resolver.resolve,
+            local_snapshot_provider=upload_store.snapshot_for,
         )
     )
     app.include_router(build_t4_router(runtime_settings, runtime_sources, runtime_adapter))
     app.include_router(
         build_fm_router(runtime_settings, runtime_sources, runtime_adapter)
+    )
+    app.include_router(
+        build_uploads_router(runtime_settings, runtime_sources, upload_store)
     )
     app.include_router(build_web_router())
     return app

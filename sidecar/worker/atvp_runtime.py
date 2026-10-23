@@ -5,8 +5,11 @@ import contextlib
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import types
 import uuid
 from pathlib import Path
@@ -25,12 +28,16 @@ class AtvpRuntime:
         self._vendor_path = Path(vendor_path or Path(__file__).parent / "vendor" / "Atvp.py")
         self._module: types.ModuleType | None = None
         self._spider: Any = None
+        self._js_process: subprocess.Popen[str] | None = None
+        self._js_lock = threading.Lock()
         self._temporary_directory = tempfile.TemporaryDirectory(prefix="t4-atvp-")
 
     def init(self, extend: str) -> dict[str, Any]:
         payload = self._decode_ext(extend)
         loader = str(payload.get("loader") or "").strip()
         module_path = self._prepare_loader(loader)
+        if module_path.suffix.lower() == ".js":
+            return self._init_javascript(module_path, extend)
         module = self._load_module(module_path)
         self._module = module
         spider_class = getattr(module, "Spider", None)
@@ -68,6 +75,9 @@ class AtvpRuntime:
     def play(self, flag: str, play_id: str, vip_flags: Any) -> Any:
         return self._invoke("playerContent", flag, play_id, vip_flags)
 
+    def action(self, action: str) -> Any:
+        return self._invoke("action", action)
+
     def close(self) -> None:
         if self._spider is not None and hasattr(self._spider, "destroy"):
             try:
@@ -77,9 +87,24 @@ class AtvpRuntime:
                 pass
         self._spider = None
         self._module = None
+        if self._js_process is not None:
+            self._js_process.kill()
+            self._js_process.wait(timeout=2)
+            self._js_process = None
         self._temporary_directory.cleanup()
 
     def _invoke(self, method_name: str, *args: Any) -> Any:
+        if self._js_process is not None:
+            try:
+                return self._json_value(
+                    self._js_request(method_name, list(args))
+                )
+            except AtvpRuntimeError:
+                raise
+            except Exception as exc:
+                raise AtvpRuntimeError(
+                    f"JavaScript {method_name} failed: {type(exc).__name__}"
+                ) from exc
         if self._spider is None:
             raise AtvpRuntimeError("Atvp runtime is not initialized")
         method = getattr(self._spider, method_name, None)
@@ -94,6 +119,63 @@ class AtvpRuntime:
             raise AtvpRuntimeError(
                 f"Atvp {method_name} failed: {type(exc).__name__}"
             ) from exc
+
+    def _init_javascript(self, path: Path, extend: str) -> dict[str, Any]:
+        node = shutil.which("node") or shutil.which("nodejs")
+        if node is None:
+            raise AtvpRuntimeError("JavaScript runtime is unavailable")
+        bridge = Path(__file__).parent / "vendor" / "js_runtime.mjs"
+        try:
+            self._js_process = subprocess.Popen(
+                [node, str(bridge), str(path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+            )
+            result = self._js_request("init", [extend])
+            name = self._js_request("getName", [])
+        except Exception as exc:
+            if self._js_process is not None:
+                self._js_process.kill()
+                self._js_process.wait(timeout=2)
+                self._js_process = None
+            raise AtvpRuntimeError(
+                f"JavaScript plugin init failed: {type(exc).__name__}"
+            ) from exc
+        return {"result": self._json_value(result), "name": self._json_value(name)}
+
+    def _js_request(self, method: str, args: list[Any]) -> Any:
+        process = self._js_process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise AtvpRuntimeError("JavaScript runtime is not initialized")
+        request_id = uuid.uuid4().hex
+        with self._js_lock:
+            process.stdin.write(
+                json.dumps(
+                    {"id": request_id, "method": method, "args": args},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            line = process.stdout.readline()
+        if not line:
+            raise AtvpRuntimeError("JavaScript runtime exited unexpectedly")
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise AtvpRuntimeError("JavaScript runtime returned invalid JSON") from exc
+        if response.get("id") != request_id:
+            raise AtvpRuntimeError("JavaScript runtime response id mismatch")
+        if not response.get("ok"):
+            error = response.get("error") or {}
+            raise AtvpRuntimeError(
+                str(error.get("message") or "JavaScript plugin rejected request")
+            )
+        return response.get("result")
 
     @staticmethod
     def _json_value(value: Any) -> Any:
@@ -152,6 +234,12 @@ class AtvpRuntime:
 
     def _load_module(self, path: Path) -> types.ModuleType:
         self._install_base_spider_module()
+        base_spider = sys.modules["base.spider"]
+        if (
+            not hasattr(base_spider, "Spider")
+            and path.resolve() != self._vendor_path.resolve()
+        ):
+            self._load_module(self._vendor_path)
         module_name = f"t4_atvp_{uuid.uuid4().hex}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -165,7 +253,6 @@ class AtvpRuntime:
             ) from exc
         fallback = getattr(module, "_FallbackSpider", None)
         if fallback is not None:
-            base_spider = sys.modules["base.spider"]
             base_spider.Spider = fallback
         return module
 

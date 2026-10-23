@@ -27,7 +27,7 @@ def test_fm_path_is_derived_without_exposing_gateway_token() -> None:
 
 def test_fm_path_is_direct_in_local_mode() -> None:
     assert build_fm_path(None, "env-at", "csp_BiliBili") == (
-        "/t4/fm/env-at/csp_BiliBili/api/"
+        "/t4/fm/env-at/csp_BiliBili/"
     )
 
 

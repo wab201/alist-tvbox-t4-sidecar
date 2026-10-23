@@ -50,6 +50,9 @@ T4_GATEWAY_TOKEN=
 T4_SOURCES_FILE=/app/config/sources.json
 ALIST_TVBOX_SUBSCRIPTION_URL=请替换为AT完整订阅地址
 T4_WORKER_TIMEOUT=15
+T4_SUBSCRIPTION_CACHE_TTL=30
+T4_PLUGIN_DIR=/data/plugins
+T4_UPLOAD_MAX_BYTES=2000000
 T4_SERVICE_NAME=t4-sidecar
 T4_VERSION=0.1.0
 ```
@@ -147,6 +150,14 @@ curl -fsS http://127.0.0.1:8765/t4/health
 5. 点击“复制 FM 地址”复制当前插件的 FM 兼容入口，直接粘贴到 FM 影视中使用；页面也保留“复制首页测试地址”用于接口排查。
 6. 修改 `.env` 后先重新创建容器，再刷新页面。
 
+页面中的“上传本地插件”支持标准 Python `Spider` 和 Sidecar JavaScript 插件。上传后会自动注册
+`local-uploaded` source，并持久化到 Docker volume；不需要手工编辑 `sources.json`。
+
+Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 导入方式；JavaScript
+插件按 Sidecar 合同导出 `homeContent`、`categoryContent`、`detailContent`、`searchContent`、
+`playerContent`，需要追更或检查更新时再导出 `action`。这不是对任意 Drpy/TVBox `rule`
+文件的无条件兼容，上传后应先用页面的首页、详情和播放入口做冒烟验证。
+
 页面会标注不能转成标准 T4 的本地能力或页面入口，例如 `csp_Push`、`csp_WebHome`。这类条目不会被当作可播放的标准 VOD 插件。
 
 ### 页面安全规则
@@ -164,6 +175,7 @@ curl -fsS http://127.0.0.1:8765/t4/health
 | `400` | 缺少 `source` 或多插件订阅缺少 `site` | 先确认 source ID，再选择具体插件 |
 | `501` | 插件只有 AT 客户端本地能力，没有 AT 服务端 T4 路由 | 改用支持标准 T4 的插件 |
 | `502` | AT 订阅、插件 loader 或上游站点失败 | 检查 AT 地址、订阅有效期和容器日志 |
+| `400` | 上传文件语法或插件合同不合格 | 使用包含 `Spider` 类的 `.py`，或使用 Sidecar JavaScript 导出合同 |
 
 ## 六、在 T4 客户端中使用
 

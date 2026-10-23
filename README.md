@@ -34,6 +34,8 @@ Sidecar 只负责 T4 转译和转发，不替代 AT 管理面。AT 登录、Cook
 - 自定义 `secspider/1` 动态 loader 和只读 keyring 回退
 - AT 内置源原生桥接：Bilibili、我的追更、AList、小雅、片单、直播、Emby、Jellyfin、飞牛、盘搜、Telegram 豆瓣、Telegram 频道、Telegram 网页
 - source 级 Worker 会话、超时回收和 opaque 详情/播放 ID
+- Web 上传标准 Python `Spider` 或 Sidecar JavaScript 插件，自动注册到 `local-uploaded`
+- 订阅快取和并发单飞，避免每个 T4 请求重复拉取、解析 AT 订阅
 
 内置源的列表、搜索、详情和播放复用 AT 原生服务端。Media 的追更动作通过 `/t4/api/action` 复用 AT `/play`。`csp_Push` 是 Android 客户端本地能力，`csp_WebHome` 和 `csp_Nostr` 是页面入口，能力快照会明确标记为非标准 T4，不伪造空 VOD 结果。
 
@@ -73,10 +75,29 @@ http://NAS_IP:8765/t4/health
 | `ALIST_TVBOX_SUBSCRIPTION_URL` | 推荐 | AT 生成的完整订阅地址，包含订阅所需授权信息 |
 | `T4_SOURCES_FILE` | 否 | 容器内 source 配置文件路径，默认 `/app/config/sources.json` |
 | `T4_WORKER_TIMEOUT` | 否 | 插件请求超时秒数，默认 `15` |
+| `T4_SUBSCRIPTION_CACHE_TTL` | 否 | AT 订阅快取秒数，默认 `30` |
+| `T4_PLUGIN_DIR` | 否 | 上传插件持久化目录，默认 `/data/plugins` |
+| `T4_UPLOAD_MAX_BYTES` | 否 | 单个上传文件上限，默认 `2000000` |
 | `T4_SERVICE_NAME` | 否 | 健康检查显示的服务名 |
 | `T4_VERSION` | 否 | 健康检查显示的版本 |
 
 真实订阅地址、Gateway Token、插件 secret、Cookie 和 keyring 只能放在 NAS 的 `.env` 或 Docker Secret 中，不能提交到 Git，也不要写入 Dockerfile。
+
+### 上传和自动注册插件
+
+打开 Web 页面中的“上传本地插件”，选择 `.py` 或 `.js` 文件并上传。上传成功后会自动建立
+`local-uploaded` source，并在插件能力中生成对应 FM 兼容地址。
+
+- Python 文件需要包含标准 `Spider` 类，并实现 FongMi/ATVP 方法。
+- JavaScript 文件使用 Sidecar 的 Node.js 适配合同，导出 `init`、`getName`、`homeContent`、
+  `categoryContent`、`detailContent`、`searchContent`、`playerContent` 方法；需要追更或检查更新
+  时可以额外导出 `action`。
+- Python 插件可以按原版 ATVP 方式使用 `from base.spider import Spider`，Sidecar 会在导入前注入
+  兼容基类。
+- JavaScript 上传入口执行的是 Sidecar 的明确适配合同，不等同于对所有任意 Drpy/TVBox
+  `rule` 文件提供通用兼容；页面会在插件执行失败时返回可定位的错误。
+- 上传文件保存在 Docker volume 的 `/data/plugins`，容器重启后自动恢复注册。
+- 上传入口等同于执行本地代码，只应在可信的家庭网络或已启用保护模式的管理面使用。
 
 ## NAS 部署
 

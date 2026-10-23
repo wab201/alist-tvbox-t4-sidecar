@@ -8,9 +8,13 @@ services:
       - .env
     environment:
       T4_SOURCES_FILE: ${T4_SOURCES_FILE:-/app/config/sources.json}
+      T4_PLUGIN_DIR: ${T4_PLUGIN_DIR:-/data/plugins}
+      T4_SUBSCRIPTION_CACHE_TTL: ${T4_SUBSCRIPTION_CACHE_TTL:-30}
+      T4_UPLOAD_MAX_BYTES: ${T4_UPLOAD_MAX_BYTES:-2000000}
     ports:
       - "${T4_PORT:-8765}:8765"
-    volumes: []
+    volumes:
+      - t4_data:/data
       # Optional custom secspider keyring fallback. Keep this file read-only.
       # - ./secrets/atvp-keyring.json:/run/secrets/atvp-keyring.json:ro
       # Optional file-based source registry. Uncomment when not using the
@@ -34,3 +38,6 @@ services:
       - "8766:80"
     volumes:
       - ./reverse-proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  t4_data:

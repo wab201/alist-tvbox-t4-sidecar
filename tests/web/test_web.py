@@ -17,6 +17,8 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "site=" in response.text
     assert "复制 FM 地址" in response.text
     assert "fm_path" in response.text
+    assert "上传并注册" in response.text
+    assert "local-uploaded" in response.text
     assert "&t4_token=" not in response.text
     assert "sessionStorage" in response.text
     assert "secspider" not in response.text.lower()

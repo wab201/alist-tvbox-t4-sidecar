@@ -123,6 +123,22 @@
   </section>
 
   <section class="panel">
+    <h2>上传本地插件</h2>
+    <div class="controls">
+      <label>Python / JavaScript 爬虫文件
+        <input id="plugin-file" type="file" accept=".py,.js">
+      </label>
+      <button id="upload-plugin" class="primary">上传并注册</button>
+    </div>
+    <div class="notice">
+      Python 文件需要包含标准 <code>Spider</code> 类；JavaScript 文件需要导出
+      <code>homeContent</code>、<code>categoryContent</code>、<code>detailContent</code>、
+      <code>searchContent</code>、<code>playerContent</code> 等方法。上传后会自动出现在
+      <code>local-uploaded</code> source。
+    </div>
+  </section>
+
+  <section class="panel">
     <div class="source-head">
       <h2>已配置 source</h2>
       <button id="refresh">刷新</button>
@@ -136,6 +152,8 @@
   const sourcesNode = document.querySelector("#sources");
   const healthNode = document.querySelector("#health");
   const authPanel = document.querySelector("#auth-panel");
+  const pluginFileInput = document.querySelector("#plugin-file");
+  const uploadPluginButton = document.querySelector("#upload-plugin");
   const savedToken = sessionStorage.getItem("t4_token") || "";
   let authRequired = false;
   tokenInput.value = savedToken;
@@ -364,8 +382,39 @@
     }
   }
 
+  async function uploadPlugin() {
+    const file = pluginFileInput.files[0];
+    if (!file) {
+      setStatus("请选择 .py 或 .js 文件", "error");
+      return;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    uploadPluginButton.disabled = true;
+    setStatus("上传并校验插件中...");
+    try {
+      const response = await fetch("/t4/api/plugins/upload", {
+        method: "POST",
+        headers: headers(),
+        body: form
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.detail?.message || `HTTP ${response.status}`);
+      }
+      setStatus(`插件 ${payload.plugin.name} 已注册`, "ok");
+      pluginFileInput.value = "";
+      await loadSources();
+    } catch (error) {
+      setStatus(error.message, "error");
+    } finally {
+      uploadPluginButton.disabled = false;
+    }
+  }
+
   document.querySelector("#save").onclick = loadSources;
   document.querySelector("#refresh").onclick = loadSources;
+  uploadPluginButton.onclick = uploadPlugin;
   document.querySelector("#clear").onclick = () => {
     tokenInput.value = "";
     sessionStorage.removeItem("t4_token");

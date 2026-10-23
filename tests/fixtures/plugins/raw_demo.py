@@ -49,3 +49,6 @@ class Spider(Spider):
             "url": f"https://video.invalid/{id}.m3u8",
             "header": {"User-Agent": "t4-test"},
         }
+
+    def action(self, action):
+        return {"action": action, "list": []}

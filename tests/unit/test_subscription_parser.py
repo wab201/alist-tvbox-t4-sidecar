@@ -6,6 +6,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from sidecar.at.subscription import (
+    CachedSubscriptionResolver,
     AtSubscriptionClient,
     SubscriptionParseError,
     SubscriptionParser,
@@ -305,6 +306,31 @@ def test_subscription_client_redacts_transport_failures() -> None:
         assert str(exc) == "AT subscription request failed before receiving a response"
     else:
         raise AssertionError("expected a normalized subscription error")
+
+
+def test_cached_subscription_resolver_shares_snapshot() -> None:
+    calls = 0
+
+    async def fetcher(source: SourceConfig) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"sites": []}
+
+    source = SourceConfig(
+        source_id="demo",
+        display_name="Demo",
+        at_base_url=AT_BASE,
+        subscription_id="12",
+    )
+    resolver = CachedSubscriptionResolver(fetcher, ttl=30)
+
+    async def run() -> None:
+        await resolver.resolve(source)
+        await resolver.resolve(source)
+
+    asyncio.run(run())
+
+    assert calls == 1
 
 
 async def fake_fetcher(source: SourceConfig) -> dict[str, object]:

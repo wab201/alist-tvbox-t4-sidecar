@@ -39,11 +39,10 @@ def build_fm_path(
     source_part = f"{quote(source_id, safe='')}/"
     plugin_part = f"{quote(plugin_id, safe='')}/"
     if access_key is None:
-        return f"/t4/fm/{source_part}{plugin_part}api/"
+        return f"/t4/fm/{source_part}{plugin_part}"
     return (
         "/t4/fm/"
         f"{source_part}"
         f"{plugin_part}"
         f"{access_key}/"
-        "api/"
     )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
+import threading
 from typing import Any, Protocol
 
 from sidecar.at.subscription import (
@@ -54,18 +56,29 @@ class T4Adapter:
         subscription_fetcher: SubscriptionFetcher | None = None,
         opaque_ids: OpaqueIdStore | None = None,
         native_invoker: NativeInvoker | None = None,
+        subscription_resolver: Any | None = None,
+        local_snapshot_provider: Any | None = None,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
         self._native = native_invoker
         self._fetcher = subscription_fetcher
         self._opaque_ids = opaque_ids or OpaqueIdStore()
+        self._subscription_resolver = subscription_resolver
+        self._local_snapshot_provider = local_snapshot_provider
 
     async def dispatch(self, request: T4Request) -> dict[str, Any]:
         source = self._sources.get(request.source_id)
         if source is None:
             raise SubscriptionParseError("source was not found")
-        snapshot = await resolve_subscription(source, self._fetcher)
+        snapshot = None
+        if self._local_snapshot_provider is not None:
+            snapshot = self._local_snapshot_provider(request.source_id)
+        if snapshot is None:
+            if self._subscription_resolver is not None:
+                snapshot = await self._subscription_resolver(source)
+            else:
+                snapshot = await resolve_subscription(source, self._fetcher)
         plugin = snapshot.plugin_for(request.plugin_id)
         method, params = self._translate(request.module, request.params)
         params = self._unwrap_params(
@@ -78,9 +91,21 @@ class T4Adapter:
         if plugin.plugin_type == "builtin":
             if self._native is None:
                 raise SubscriptionParseError("native bridge is not configured")
-            result = self._native.call(runtime_key, plugin, method, params)
+            result = await asyncio.to_thread(
+                self._native.call,
+                runtime_key,
+                plugin,
+                method,
+                params,
+            )
         else:
-            result = self._worker.call(runtime_key, plugin, method, params)
+            result = await asyncio.to_thread(
+                self._worker.call,
+                runtime_key,
+                plugin,
+                method,
+                params,
+            )
         return self._normalize(
             request.module,
             result,
@@ -292,6 +317,7 @@ class AtvpWorkerInvoker:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
         self._initialized: set[str] = set()
+        self._state_lock = threading.Lock()
 
     def call(
         self,
@@ -300,13 +326,19 @@ class AtvpWorkerInvoker:
         method: str,
         params: dict[str, Any],
     ) -> Any:
-        if runtime_key not in self._initialized:
-            self._pool.request(runtime_key, "init", {"extend": plugin.worker_extend()})
-            self._initialized.add(runtime_key)
+        with self._state_lock:
+            if runtime_key not in self._initialized:
+                self._pool.request(
+                    runtime_key,
+                    "init",
+                    {"extend": plugin.worker_extend()},
+                )
+                self._initialized.add(runtime_key)
         try:
             return self._pool.request(runtime_key, method, params)
         except Exception:
-            self._initialized.discard(runtime_key)
+            with self._state_lock:
+                self._initialized.discard(runtime_key)
             raise
 
 
