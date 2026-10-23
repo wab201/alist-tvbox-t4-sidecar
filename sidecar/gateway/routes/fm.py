@@ -24,21 +24,29 @@ def build_fm_router(
         "/t4/fm/{source_id}/{plugin_id}/{access_key}/api/{module}",
         methods=["GET", "POST"],
     )
+    @router.api_route(
+        "/t4/fm/{source_id}/{plugin_id}/api/{module}",
+        methods=["GET", "POST"],
+    )
     async def fm_module(
         source_id: str,
         plugin_id: str,
-        access_key: str,
         module: str,
         request: Request,
+        access_key: str | None = None,
         gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, Any]:
-        if not fm_access_key_matches(
-            settings.gateway_token,
-            source_id,
-            plugin_id,
-            access_key,
-        ):
-            if not gateway_token_matches(settings.gateway_token, gateway_token):
+        if settings.gateway_token:
+            key_is_valid = access_key is not None and fm_access_key_matches(
+                settings.gateway_token,
+                source_id,
+                plugin_id,
+                access_key,
+            )
+            if not key_is_valid and not gateway_token_matches(
+                settings.gateway_token,
+                gateway_token,
+            ):
                 raise HTTPException(
                     status_code=401,
                     detail={

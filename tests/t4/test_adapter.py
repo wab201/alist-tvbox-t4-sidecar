@@ -191,6 +191,30 @@ def test_t4_route_supports_get_and_post() -> None:
     assert post_response.json()["list"][0]["vod_id"].startswith("t4_")
 
 
+def test_t4_route_is_open_in_local_mode() -> None:
+    worker = FakeWorker()
+    adapter = T4Adapter(
+        SourceRegistry((source(),)),
+        worker,
+        subscription_fetcher=fetcher,
+    )
+    client = TestClient(
+        create_app(
+            Settings(),
+            SourceRegistry((source(),)),
+            subscription_fetcher=fetcher,
+            t4_adapter=adapter,
+        )
+    )
+
+    response = client.get(
+        "/t4/api/home",
+        params={"source": "source-a"},
+    )
+
+    assert response.status_code == 200
+
+
 async def builtin_fetcher(_source):
     return {
         "sites": [

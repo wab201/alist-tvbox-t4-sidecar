@@ -48,12 +48,12 @@ http://NAS_IP:8765/t4/
 页面使用步骤：
 
 1. 打开上面的地址，确认页面右上角健康状态正常。
-2. 在 NAS 项目目录 `.env` 中取出 `T4_GATEWAY_TOKEN`，填入页面后点击“加载”。
+2. 页面会自动读取容器中的 source 和 AT 订阅配置；默认本地模式不需要填写 Token。
 3. 在对应 source 中点击“读取能力”，查看订阅解析出的插件列表。
 4. 选择要使用的插件 `site`。多插件订阅必须选择，例如 `csp_BiliBili`、`csp_Media`。
 5. 点击“首页冒烟”验证插件；验证通过后点击“复制 FM 地址”，即可把该插件的兼容入口添加到 FM 影视。
 
-页面中的 `env-at` 是使用 `ALIST_TVBOX_SUBSCRIPTION_URL` 时自动生成的默认 source ID。页面只展示脱敏后的插件能力，不展示订阅令牌、插件 secret、keyring 或原始播放 ID。Gateway Token 仅临时保存在当前浏览器标签页，生产环境应通过 `X-T4-Token` 请求头传递，不要把令牌写进公开 URL。
+页面中的 `env-at` 是使用 `ALIST_TVBOX_SUBSCRIPTION_URL` 时自动生成的默认 source ID。页面只展示脱敏后的插件能力，不展示订阅令牌、插件 secret、keyring 或原始播放 ID。本地模式无需 Gateway Token；保护模式下 Token 仅临时保存在当前浏览器标签页，生产环境应通过 `X-T4-Token` 请求头传递，不要把令牌写进公开 URL。
 
 健康检查地址为：
 
@@ -69,7 +69,7 @@ http://NAS_IP:8765/t4/health
 | --- | --- | --- |
 | `T4_IMAGE` | 否 | 镜像地址，默认 `ghcr.io/wab201/alist-tvbox-t4-sidecar:latest` |
 | `T4_PORT` | 否 | NAS 对外端口，默认 `8765` |
-| `T4_GATEWAY_TOKEN` | 是 | T4 API 访问令牌；健康检查除外 |
+| `T4_GATEWAY_TOKEN` | 否 | 可选保护令牌；留空时为本地直连模式 |
 | `ALIST_TVBOX_SUBSCRIPTION_URL` | 推荐 | AT 生成的完整订阅地址，包含订阅所需授权信息 |
 | `T4_SOURCES_FILE` | 否 | 容器内 source 配置文件路径，默认 `/app/config/sources.json` |
 | `T4_WORKER_TIMEOUT` | 否 | 插件请求超时秒数，默认 `15` |
@@ -91,7 +91,7 @@ mkdir -p /volume1/docker/alist-tvbox-t4-sidecar
 cd /volume1/docker/alist-tvbox-t4-sidecar
 # 从本地仓库上传 docker-compose.yml 和 .env.example，再复制：
 cp .env.example .env
-# 编辑 .env，填写 T4_GATEWAY_TOKEN 和 ALIST_TVBOX_SUBSCRIPTION_URL
+# 编辑 .env，填写 ALIST_TVBOX_SUBSCRIPTION_URL；本地模式无需填写 Gateway Token
 docker compose config --quiet
 docker compose pull
 docker compose up -d
@@ -125,7 +125,8 @@ docker compose up --build -d t4-sidecar
 
 ## T4 调用示例
 
-请求头推荐使用 `X-T4-Token`。下面示例中的 `<T4地址>` 是 `http://NAS_IP:8765`，`source=env-at` 是环境变量订阅的默认 source ID。
+如果配置了可选的 `T4_GATEWAY_TOKEN`，请求头使用 `X-T4-Token`；未配置时无需请求头。下面示例中的
+`<T4地址>` 是 `http://NAS_IP:8765`，`source=env-at` 是环境变量订阅的默认 source ID。
 当一个 AT 订阅包含多个插件时，必须通过 `site` 指定插件；下面以 `csp_BiliBili` 为例。
 
 ```text
@@ -143,6 +144,8 @@ POST <T4地址>/t4/api/action?source=env-at&site=csp_Media&action=inspect&id=<op
 X-T4-Token: 你的T4_GATEWAY_TOKEN
 ```
 
-不能设置请求头的客户端可以使用 Web 页面生成的 FM 兼容地址。该地址已经绑定 source 和插件，不需要客户端额外填写 `source`、`site` 或 Gateway Token，但它本身属于访问凭证，不要公开分享。直接调用底层 T4 API 时，仍可使用 `t4_token` 查询参数，但它可能进入浏览器历史、反向代理日志和访问日志，不建议用于公网地址。
+不能设置请求头的客户端可以使用 Web 页面生成的 FM 兼容地址。该地址已经绑定 source 和插件，不需要客户端额外填写
+`source`、`site` 或 Gateway Token。未配置 Gateway Token 时，FM 地址是本地直连地址；启用保护模式时，页面会自动生成插件级访问钥匙。
+直接调用底层 T4 API 时，保护模式仍可使用 `t4_token` 查询参数，但它可能进入浏览器历史、反向代理日志和访问日志，不建议用于公网地址。
 
 完整订阅 token、插件 secret、keyring 和原始播放 ID 不会出现在 T4 响应中。

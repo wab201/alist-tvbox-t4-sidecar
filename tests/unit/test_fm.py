@@ -25,6 +25,12 @@ def test_fm_path_is_derived_without_exposing_gateway_token() -> None:
     assert build_fm_access_key("gateway-token", "env-at", "csp_BiliBili") in path
 
 
+def test_fm_path_is_direct_in_local_mode() -> None:
+    assert build_fm_path(None, "env-at", "csp_BiliBili") == (
+        "/t4/fm/env-at/csp_BiliBili/api/"
+    )
+
+
 def test_fm_route_injects_source_and_plugin_without_client_parameters() -> None:
     adapter = FakeAdapter()
     source = SourceConfig("env-at", "AT subscription", status="configured")
@@ -62,3 +68,18 @@ def test_fm_route_rejects_invalid_access_key() -> None:
     )
 
     assert response.status_code == 401
+
+
+def test_fm_route_is_direct_in_local_mode() -> None:
+    source = SourceConfig("env-at", "AT subscription", status="configured")
+    app = create_app(
+        Settings(),
+        SourceRegistry((source,)),
+        t4_adapter=FakeAdapter(),
+    )
+
+    response = TestClient(app).get(
+        "/t4/fm/env-at/csp_BiliBili/api/home"
+    )
+
+    assert response.status_code == 200

@@ -92,25 +92,26 @@
     </div>
     <div class="notice">
       这是 Sidecar 的独立管理入口，不会修改 AT 的页面、数据库或原始插件。T4 客户端调用时使用同一服务的
-      <code>/t4/api/</code> 接口，并按下方说明携带 Gateway Token。
+      <code>/t4/api/</code> 接口。默认本地模式不需要额外令牌；如果部署者主动配置了
+      <code>T4_GATEWAY_TOKEN</code>，页面会自动显示保护模式。
     </div>
   </section>
 
   <section class="panel">
     <h2>使用说明</h2>
     <ol class="help">
-      <li>在 NAS 项目目录的 <code>.env</code> 中找到 <code>T4_GATEWAY_TOKEN</code>，填入下方输入框后点击“加载”。</li>
+      <li>打开页面后，Sidecar 会自动读取容器中的 source 配置和 AT 订阅，不需要手工拼接订阅参数。</li>
       <li>在每个 source 中点击“读取能力”，页面会读取脱敏后的订阅信息并列出可用插件。</li>
       <li>选择要调用的插件；多插件订阅必须选择对应的 <code>site</code>，例如 <code>csp_BiliBili</code> 或 <code>csp_Media</code>。</li>
       <li>点击“首页冒烟”验证当前插件，或点击“复制 FM 地址”获取该插件的 FM 兼容入口。</li>
     </ol>
     <div class="notice">
-      Token 只临时保存在当前浏览器标签页的 <code>sessionStorage</code> 中。复制的地址不包含 Token；
-      生产环境优先使用 <code>X-T4-Token</code> 请求头，不要把 Token 放进公开 URL。
+      本地模式下复制的 FM 地址可直接使用。若部署者启用了可选保护模式，Token 只临时保存在当前浏览器标签页的
+      <code>sessionStorage</code> 中，复制的 FM 地址会自动绑定插件访问钥匙。
     </div>
   </section>
 
-  <section class="panel">
+  <section id="auth-panel" class="panel" hidden>
     <div class="controls">
       <label>Gateway Token
         <input id="token" type="password" autocomplete="off" placeholder="输入 .env 中的 T4_GATEWAY_TOKEN">
@@ -134,7 +135,9 @@
   const statusNode = document.querySelector("#status");
   const sourcesNode = document.querySelector("#sources");
   const healthNode = document.querySelector("#health");
+  const authPanel = document.querySelector("#auth-panel");
   const savedToken = sessionStorage.getItem("t4_token") || "";
+  let authRequired = false;
   tokenInput.value = savedToken;
 
   function setStatus(text, kind = "muted") {
@@ -143,7 +146,7 @@
   }
 
   function headers() {
-    return tokenInput.value ? {"X-T4-Token": tokenInput.value} : {};
+    return authRequired && tokenInput.value ? {"X-T4-Token": tokenInput.value} : {};
   }
 
   async function request(path, options = {}) {
@@ -159,11 +162,15 @@
   async function checkHealth() {
     try {
       const payload = await request("/t4/health", {headers: {}});
+      authRequired = Boolean(payload.auth_required);
+      authPanel.hidden = !authRequired;
       healthNode.textContent = `${payload.status} · ${payload.version}`;
       healthNode.className = "badge";
+      return true;
     } catch (error) {
       healthNode.textContent = "不可用";
       healthNode.className = "badge";
+      return false;
     }
   }
 
@@ -320,7 +327,12 @@
         const url = `${location.origin}/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(plugin)}`;
         try {
           await copyText(url);
-          setStatus("T4 地址已复制；请通过 X-T4-Token 请求头携带令牌", "ok");
+          setStatus(
+            authRequired
+              ? "T4 地址已复制；保护模式请通过 X-T4-Token 请求头携带令牌"
+              : "T4 地址已复制，可直接用于 T4 客户端",
+            "ok"
+          );
         } catch (error) {
           setStatus(error.message, "error");
         }
@@ -362,8 +374,12 @@
   };
   document.querySelector("#entry-url").textContent = `${location.origin}/t4/`;
   document.querySelector("#health-url").textContent = `${location.origin}/t4/health`;
-  checkHealth();
-  if (savedToken) loadSources();
+  (async () => {
+    if (await checkHealth()) {
+      if (!authRequired || savedToken) loadSources();
+      else setStatus("保护模式：请输入 Gateway Token 后加载");
+    }
+  })();
 </script>
 </body>
 </html>

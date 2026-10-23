@@ -55,6 +55,25 @@ def test_source_list_returns_public_metadata_only() -> None:
     assert "keyring" not in response.text
 
 
+def test_source_list_is_open_in_local_mode() -> None:
+    registry = SourceRegistry(
+        (
+            SourceConfig(
+                source_id="demo",
+                display_name="Demo source",
+                status="ready",
+                capabilities=("raw", "t4"),
+            ),
+        )
+    )
+    client = TestClient(create_app(Settings(), registry))
+
+    response = client.get("/t4/api/sources")
+
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["id"] == "demo"
+
+
 def test_source_registry_reads_safe_metadata_file(tmp_path) -> None:
     source_file = tmp_path / "sources.json"
     source_file.write_text(

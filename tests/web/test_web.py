@@ -13,6 +13,7 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "location.origin}/t4/" in response.text
     assert "T4_GATEWAY_TOKEN" in response.text
     assert "X-T4-Token" in response.text
+    assert "auth_required" in response.text
     assert "site=" in response.text
     assert "复制 FM 地址" in response.text
     assert "fm_path" in response.text

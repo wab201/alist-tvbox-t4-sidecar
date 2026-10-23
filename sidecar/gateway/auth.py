@@ -4,8 +4,10 @@ import hmac
 
 
 def gateway_token_matches(expected: str | None, provided: str | None) -> bool:
-    """Compare a configured gateway token without exposing either value."""
+    """Allow local mode when no token is configured; otherwise compare exactly."""
 
-    if not expected or not provided:
+    if not expected:
+        return True
+    if not provided:
         return False
     return hmac.compare_digest(expected, provided)

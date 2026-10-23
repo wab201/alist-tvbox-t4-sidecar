@@ -36,11 +36,14 @@ def build_fm_path(
     plugin_id: str,
 ) -> str | None:
     access_key = build_fm_access_key(gateway_token, source_id, plugin_id)
+    source_part = f"{quote(source_id, safe='')}/"
+    plugin_part = f"{quote(plugin_id, safe='')}/"
     if access_key is None:
-        return None
+        return f"/t4/fm/{source_part}{plugin_part}api/"
     return (
         "/t4/fm/"
-        f"{quote(source_id, safe='')}/"
-        f"{quote(plugin_id, safe='')}/"
+        f"{source_part}"
+        f"{plugin_part}"
         f"{access_key}/"
+        "api/"
     )
