@@ -100,13 +100,14 @@ docker compose up --build -d t4-sidecar
 ## T4 调用示例
 
 请求头推荐使用 `X-T4-Token`，不能设置请求头的客户端可使用 `t4_token` 查询参数：
+当一个 AT 订阅包含多个插件时，必须通过 `site` 指定插件；下面以 `csp_BiliBili` 为例。
 
 ```text
-/t4/api/home?source=env-at
-/t4/api/category?source=env-at&t=all&pg=1
-/t4/api/search?source=env-at&wd=关键词&pg=1
-/t4/api/detail?source=env-at&ids=<opaque-id>
-/t4/api/play?source=env-at&flag=<flag>&play=<opaque-id>
+/t4/api/home?source=env-at&site=csp_BiliBili
+/t4/api/category?source=env-at&site=csp_BiliBili&t=all&pg=1
+/t4/api/search?source=env-at&site=csp_BiliBili&wd=关键词&pg=1
+/t4/api/detail?source=env-at&site=csp_BiliBili&ids=<opaque-id>
+/t4/api/play?source=env-at&site=csp_BiliBili&flag=<flag>&play=<opaque-id>
 /t4/api/action?source=env-at&site=csp_Media&action=inspect&id=<opaque-id>
 ```
 

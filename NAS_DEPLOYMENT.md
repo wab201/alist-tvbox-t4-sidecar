@@ -129,8 +129,11 @@ X-T4-Token: 你的T4_GATEWAY_TOKEN
 不能设置请求头的客户端可以使用查询参数，但查询参数可能进入浏览器历史、反向代理日志和访问日志：
 
 ```text
-http://NAS_IP:8765/t4/api/home?source=env-at&t4_token=你的T4_GATEWAY_TOKEN
+http://NAS_IP:8765/t4/api/home?source=env-at&site=csp_BiliBili&t4_token=你的T4_GATEWAY_TOKEN
 ```
+
+当一个 AT 订阅包含多个插件时，必须带上 `site` 参数；`csp_BiliBili`、`csp_Media`
+等值来自订阅中的插件 `key`。
 
 因此，生产环境优先使用支持自定义请求头的客户端或在可信的内网反向代理后使用。
 
