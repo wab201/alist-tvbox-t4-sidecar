@@ -146,8 +146,10 @@ docker compose up -d t4-sidecar
 需要可回滚和可复现时，把 `.env` 中的镜像改为提交标签，例如：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-f39fe8d
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-<提交短 SHA>
 ```
+
+将 `<提交短 SHA>` 替换为 GitHub Actions 构建日志或镜像标签中对应提交的短 SHA。
 
 然后执行：
 

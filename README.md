@@ -78,7 +78,7 @@ docker compose up -d
 
 ```text
 ghcr.io/wab201/alist-tvbox-t4-sidecar:latest
-ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-f39fe8d
+ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-<提交短 SHA>
 ```
 
 私有 GHCR 包需要在 NAS 单独执行 `docker login ghcr.io`。登录令牌只用于 Docker 凭证存储，不放入项目 `.env`。
