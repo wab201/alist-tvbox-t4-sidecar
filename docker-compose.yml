@@ -1,14 +1,15 @@
 services:
   t4-sidecar:
+    image: ${T4_IMAGE:-ghcr.io/wab201/alist-tvbox-t4-sidecar:latest}
     build:
       context: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      T4_SOURCES_FILE: /app/config/sources.json
+      T4_SOURCES_FILE: ${T4_SOURCES_FILE:-/app/config/sources.json}
     ports:
-      - "8765:8765"
+      - "${T4_PORT:-8765}:8765"
     volumes:
       # Optional custom secspider keyring fallback. Keep this file read-only.
       # - ./secrets/atvp-keyring.json:/run/secrets/atvp-keyring.json:ro
