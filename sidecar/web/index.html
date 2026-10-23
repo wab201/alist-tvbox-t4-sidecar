@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>T4 Sidecar</title>
+  <title>T4 Sidecar 管理台</title>
   <style>
     :root {
       color-scheme: light;
@@ -32,21 +32,29 @@
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px; margin-bottom: 16px; }
     .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: end; }
     label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    input, button {
+    input, select, button {
       min-height: 38px; border: 1px solid var(--line); border-radius: 5px;
       background: #fff; color: var(--text); padding: 8px 11px; font: inherit;
     }
+    select { width: 100%; }
     button { cursor: pointer; font-weight: 600; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    button:disabled { cursor: wait; opacity: .6; }
+    button:disabled { cursor: not-allowed; opacity: .6; }
     .status { min-height: 22px; margin-top: 10px; }
     .status.error { color: var(--danger); }
     .status.ok { color: var(--ok); }
+    .entry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+    .entry-value { display: block; overflow-wrap: anywhere; margin-top: 6px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .help { margin: 0; padding-left: 20px; color: var(--muted); }
+    .help li + li { margin-top: 5px; }
+    .notice { margin-top: 12px; padding: 10px 12px; background: #f8fafc; border-left: 3px solid var(--accent); color: var(--muted); }
     .sources { display: grid; gap: 10px; }
     .source { border-top: 1px solid var(--line); padding-top: 14px; }
     .source:first-child { border-top: 0; padding-top: 0; }
     .source-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
     .badge { color: var(--muted); font-size: 12px; }
+    .plugin-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
+    .plugin-note { margin-top: 6px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .snapshot { margin-top: 12px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f8fafc; padding: 10px; overflow: auto; }
     .empty { color: var(--muted); padding: 12px 0; }
@@ -54,6 +62,7 @@
       header { display: block; }
       header .muted { margin-top: 5px; }
       .controls { grid-template-columns: 1fr; }
+      .entry-grid, .plugin-controls { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -61,16 +70,48 @@
 <main>
   <header>
     <div>
-      <h1>T4 Sidecar</h1>
-      <p class="muted">AList-TVBox source bridge</p>
+      <h1>T4 Sidecar 管理台</h1>
+      <p class="muted">AList-TVBox 订阅转译与 T4 接口检查</p>
     </div>
     <span id="health" class="badge">未检查</span>
   </header>
 
   <section class="panel">
+    <h2>进入地址</h2>
+    <div class="entry-grid">
+      <div>
+        <div class="muted">Web 管理入口</div>
+        <code id="entry-url" class="entry-value"></code>
+      </div>
+      <div>
+        <div class="muted">健康检查地址</div>
+        <code id="health-url" class="entry-value"></code>
+      </div>
+    </div>
+    <div class="notice">
+      这是 Sidecar 的独立管理入口，不会修改 AT 的页面、数据库或原始插件。T4 客户端调用时使用同一服务的
+      <code>/t4/api/</code> 接口，并按下方说明携带 Gateway Token。
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>使用说明</h2>
+    <ol class="help">
+      <li>在 NAS 项目目录的 <code>.env</code> 中找到 <code>T4_GATEWAY_TOKEN</code>，填入下方输入框后点击“加载”。</li>
+      <li>在每个 source 中点击“读取能力”，页面会读取脱敏后的订阅信息并列出可用插件。</li>
+      <li>选择要调用的插件；多插件订阅必须选择对应的 <code>site</code>，例如 <code>csp_BiliBili</code> 或 <code>csp_Media</code>。</li>
+      <li>点击“首页冒烟”验证当前插件，或点击“复制 T4 地址”获取不含令牌的首页调用地址。</li>
+    </ol>
+    <div class="notice">
+      Token 只临时保存在当前浏览器标签页的 <code>sessionStorage</code> 中。复制的地址不包含 Token；
+      生产环境优先使用 <code>X-T4-Token</code> 请求头，不要把 Token 放进公开 URL。
+    </div>
+  </section>
+
+  <section class="panel">
     <div class="controls">
       <label>Gateway Token
-        <input id="token" type="password" autocomplete="off" placeholder="输入 Sidecar token">
+        <input id="token" type="password" autocomplete="off" placeholder="输入 .env 中的 T4_GATEWAY_TOKEN">
       </label>
       <button id="save" class="primary">加载</button>
       <button id="clear">清除</button>
@@ -80,7 +121,7 @@
 
   <section class="panel">
     <div class="source-head">
-      <h2>Sources</h2>
+      <h2>已配置 source</h2>
       <button id="refresh">刷新</button>
     </div>
     <div id="sources" class="sources"><div class="empty">尚未加载</div></div>
@@ -139,34 +180,116 @@
           <span class="badge"></span>
         </div>
         <div class="badge"></div>
-        <div class="actions">
+        <div class="plugin-controls">
+          <label>插件 / site
+            <select data-role="plugin" disabled>
+              <option value="">先点击“读取能力”</option>
+            </select>
+          </label>
           <button data-action="snapshot">读取能力</button>
-          <button data-action="smoke">首页冒烟</button>
-          <button data-action="copy">复制 T4 地址</button>
+        </div>
+        <div class="badge plugin-note" data-role="plugin-note">多插件订阅必须指定 site</div>
+        <div class="actions">
+          <button data-action="smoke" disabled>首页冒烟</button>
+          <button data-action="copy" disabled>复制 T4 地址</button>
         </div>
         <pre class="snapshot" hidden></pre>`;
       article.querySelector("h2").textContent = source.name;
       article.querySelector(".source-head .badge").textContent = source.status;
       article.querySelector(".source-head + .badge").textContent =
         `${source.id} · ${(source.capabilities || []).join(", ") || "待检测"}`;
+      const pluginSelect = article.querySelector('[data-role="plugin"]');
+      const pluginNote = article.querySelector('[data-role="plugin-note"]');
+      const smokeButton = article.querySelector('[data-action="smoke"]');
+      const copyButton = article.querySelector('[data-action="copy"]');
       const snapshot = article.querySelector(".snapshot");
-      article.querySelector('[data-action="snapshot"]').onclick = async () => {
+      const selectedPlugin = () => pluginSelect.value || "";
+      const updateActionState = () => {
+        const enabled = Boolean(selectedPlugin());
+        smokeButton.disabled = !enabled;
+        copyButton.disabled = !enabled;
+      };
+      const renderPlugins = (plugins) => {
+        pluginSelect.replaceChildren();
+        const supported = plugins.filter((plugin) => plugin.t4_supported !== false);
+        if (!plugins.length) {
+          pluginSelect.add(new Option("没有可用插件", ""));
+          pluginSelect.disabled = true;
+          pluginNote.textContent = "订阅中没有可供 Sidecar 调用的插件";
+          updateActionState();
+          return;
+        }
+        if (supported.length > 1) {
+          pluginSelect.add(new Option("请选择插件 site", ""));
+        }
+        for (const plugin of plugins) {
+          const suffix = plugin.t4_supported === false
+            ? `（${plugin.unsupported_reason || "不支持标准 T4"}）`
+            : "";
+          const option = new Option(`${plugin.name} · ${plugin.id}${suffix}`, plugin.id);
+          option.disabled = plugin.t4_supported === false;
+          pluginSelect.add(option);
+        }
+        pluginSelect.disabled = supported.length === 0;
+        if (supported.length === 1) {
+          pluginSelect.value = supported[0].id;
+          pluginNote.textContent = `当前插件：${supported[0].name} · ${supported[0].id}`;
+        } else if (supported.length > 1) {
+          pluginSelect.value = "";
+          pluginNote.textContent = `已发现 ${supported.length} 个可用插件，请先选择 site`;
+        } else {
+          pluginNote.textContent = "订阅中的插件均不是标准 T4 服务";
+        }
+        updateActionState();
+      };
+      const copyText = async (value) => {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(value);
+          return;
+        }
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.append(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("当前浏览器不允许复制，请手动复制页面中的地址");
+      };
+      const loadCapabilities = async () => {
         try {
           snapshot.hidden = false;
-          snapshot.textContent = JSON.stringify(
-            await request(`/t4/api/sources/${encodeURIComponent(source.id)}/subscription`),
-            null, 2
+          snapshot.textContent = "读取订阅能力中...";
+          const payload = await request(
+            `/t4/api/sources/${encodeURIComponent(source.id)}/subscription`
           );
+          source.plugins = payload.plugins || [];
+          renderPlugins(payload.plugins || []);
+          snapshot.textContent = JSON.stringify(payload, null, 2);
           setStatus(`${source.name} 能力读取完成`, "ok");
         } catch (error) {
           snapshot.hidden = false;
           snapshot.textContent = String(error.message);
+          renderPlugins([]);
           setStatus(error.message, "error");
         }
       };
+      article.querySelector('[data-action="snapshot"]').onclick = loadCapabilities;
+      pluginSelect.onchange = () => {
+        const plugin = (source.plugins || []).find((item) => item.id === pluginSelect.value);
+        pluginNote.textContent = plugin
+          ? `${plugin.name} · ${plugin.id} · ${(plugin.capabilities || []).join(", ") || "无标准 T4 能力"}`
+          : "多插件订阅必须指定 site";
+        updateActionState();
+      };
       article.querySelector('[data-action="smoke"]').onclick = async () => {
         try {
-          const payload = await request(`/t4/api/home?source=${encodeURIComponent(source.id)}`);
+          const plugin = selectedPlugin();
+          const payload = await request(
+            `/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(plugin)}`
+          );
           snapshot.hidden = false;
           snapshot.textContent = JSON.stringify(payload, null, 2);
           setStatus(`${source.name} 首页冒烟通过`, "ok");
@@ -177,9 +300,14 @@
         }
       };
       article.querySelector('[data-action="copy"]').onclick = async () => {
-        const url = `${location.origin}/t4/api/home?source=${encodeURIComponent(source.id)}&t4_token=${encodeURIComponent(tokenInput.value)}`;
-        await navigator.clipboard.writeText(url);
-        setStatus("T4 地址已复制", "ok");
+        const plugin = selectedPlugin();
+        const url = `${location.origin}/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(plugin)}`;
+        try {
+          await copyText(url);
+          setStatus("T4 地址已复制；请通过 X-T4-Token 请求头携带令牌", "ok");
+        } catch (error) {
+          setStatus(error.message, "error");
+        }
       };
       sourcesNode.append(article);
     }
@@ -206,6 +334,8 @@
     renderSources([]);
     setStatus("已清除");
   };
+  document.querySelector("#entry-url").textContent = `${location.origin}/t4/`;
+  document.querySelector("#health-url").textContent = `${location.origin}/t4/health`;
   checkHealth();
   if (savedToken) loadSources();
 </script>

@@ -110,9 +110,62 @@ curl -fsS http://127.0.0.1:8765/t4/health
 http://NAS_IP:8765/t4/
 ```
 
-打开页面后输入 `.env` 中的 `T4_GATEWAY_TOKEN`，即可读取 source 能力并进行首页冒烟测试。
+## 五、Web 管理界面使用
 
-## 五、在 T4 客户端中使用
+### 进入地址
+
+直接访问：
+
+```text
+http://NAS_IP:8765/t4/
+```
+
+如果启用了可选的 Nginx profile，则访问：
+
+```text
+http://NAS_IP:8766/t4/
+```
+
+页面右上角会先检查：
+
+```text
+http://NAS_IP:8765/t4/health
+```
+
+健康检查不需要 Gateway Token。页面打不开时，先在 NAS 上执行：
+
+```bash
+curl -fsS http://127.0.0.1:8765/t4/health
+```
+
+### 页面操作
+
+1. 在 NAS 项目目录 `.env` 中读取 `T4_GATEWAY_TOKEN`，填入页面的 Gateway Token 输入框，点击“加载”。
+2. 在已加载的 source 中点击“读取能力”，等待订阅插件列表出现。
+3. 选择需要调用的插件 `site`。使用环境变量订阅时，source ID 固定为 `env-at`；一个订阅含多个插件时，必须选择 `site`。
+4. 点击“首页冒烟”测试当前插件的首页请求。
+5. 点击“复制 T4 地址”复制不含 Token 的首页接口地址，客户端调用时通过 `X-T4-Token` 请求头提供令牌。
+6. 修改 `.env` 后先重新创建容器，再刷新页面。
+
+页面会标注不能转成标准 T4 的本地能力或页面入口，例如 `csp_Push`、`csp_WebHome`。这类条目不会被当作可播放的标准 VOD 插件。
+
+### 页面安全规则
+
+- Gateway Token 仅临时保存在当前浏览器标签页的 `sessionStorage`。
+- 复制的 T4 地址不包含 Gateway Token。
+- 不要把 Token 粘贴到公开工单、截图、浏览器书签或公网 URL。
+- 生产环境优先使用支持自定义请求头的 T4 客户端，或把服务放在 HTTPS、VPN 和访问控制之后。
+
+### 页面常见错误
+
+| 状态 | 含义 | 处理 |
+| --- | --- | --- |
+| `401` | Gateway Token 缺失或错误 | 重新从 NAS `.env` 复制 `T4_GATEWAY_TOKEN` |
+| `400` | 缺少 `source` 或多插件订阅缺少 `site` | 先确认 source ID，再选择具体插件 |
+| `501` | 插件只有 AT 客户端本地能力，没有 AT 服务端 T4 路由 | 改用支持标准 T4 的插件 |
+| `502` | AT 订阅、插件 loader 或上游站点失败 | 检查 AT 地址、订阅有效期和容器日志 |
+
+## 六、在 T4 客户端中使用
 
 Sidecar 的 T4 根地址为：
 
@@ -137,7 +190,7 @@ http://NAS_IP:8765/t4/api/home?source=env-at&site=csp_BiliBili&t4_token=你的T4
 
 因此，生产环境优先使用支持自定义请求头的客户端或在可信的内网反向代理后使用。
 
-## 六、升级和固定版本
+## 七、升级和固定版本
 
 使用最新稳定镜像：
 
@@ -163,7 +216,7 @@ docker compose up -d t4-sidecar
 
 回滚就是把 `T4_IMAGE` 改回上一个已验证的 `sha-` 标签，再重新执行上述两条命令。不要在 NAS 上使用 `docker compose up --build`，那会绕过 GHCR 镜像并在 NAS 本地构建。
 
-## 七、可选：同源 `/t4/` 入口
+## 八、可选：同源 `/t4/` 入口
 
 如果 AT 已经有反向代理，可以把 `/t4/` 转发到 NAS 的 `8765` 端口。这样客户端只需要访问同一域名下的 `/t4/`，但反向代理必须正确转发：
 
@@ -180,7 +233,7 @@ docker compose --profile proxy up -d
 
 这个 profile 只提供独立的 Nginx 入口，不会自动修改 AT 的反向代理配置，也不会改变 AT 的端口。
 
-## 八、文件 source 方式
+## 九、文件 source 方式
 
 如果不使用 `ALIST_TVBOX_SUBSCRIPTION_URL`，可以改用脱敏的 source 配置文件：
 
@@ -202,7 +255,7 @@ chmod 600 config/sources.json
 
 同一实例建议只选择一种 source 配置方式，优先使用环境变量中的完整订阅地址。
 
-## 九、故障排查
+## 十、故障排查
 
 ### `docker pull` 返回 denied
 
@@ -262,7 +315,7 @@ docker compose images
 
 如果容器名称被 Compose 加了项目名前缀，以 `docker compose ps` 显示的名称为准。
 
-## 十、安全边界
+## 十一、安全边界
 
 - 不把 AT 账号密码、完整订阅地址、Cookie、插件 secret、keyring 提交到 Git。
 - 不把 GHCR PAT 写入 `.env`、Compose 文件或镜像构建参数。
