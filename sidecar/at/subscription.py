@@ -5,7 +5,7 @@ import base64
 import binascii
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlsplit
 
@@ -37,6 +37,7 @@ class PluginDescriptor:
     playback_config_url: str = ""
     uid: str = ""
     home_page: str = ""
+    site_options: dict[str, Any] = field(default_factory=dict)
 
     def worker_extend(self) -> str:
         payload: dict[str, Any] = {
@@ -326,6 +327,14 @@ class SubscriptionParser:
             playback_config_url=str(ext.get("playbackConfigUrl") or ""),
             uid=str(ext.get("uid") or ""),
             home_page=str(site.get("homePage") or "").strip(),
+            site_options={
+                key: site[key]
+                for key in (
+                    "searchable", "quickSearch", "filterable", "categories",
+                    "style", "timeout", "playerType",
+                )
+                if key in site
+            },
         )
 
 
@@ -409,20 +418,30 @@ class CachedSubscriptionResolver:
         task = self._inflight.get(source.source_id)
         if task is None:
             task = asyncio.create_task(
-                resolve_subscription(source, self._fetcher)
+                self._fetch(source)
             )
             self._inflight[source.source_id] = task
         try:
-            snapshot = await task
+            return await asyncio.shield(task)
         finally:
-            if self._inflight.get(source.source_id) is task:
+            if task.done() and self._inflight.get(source.source_id) is task:
                 self._inflight.pop(source.source_id, None)
-        if self._ttl > 0:
+
+    async def _fetch(self, source: SourceConfig) -> SubscriptionSnapshot:
+        snapshot = await resolve_subscription(source, self._fetcher)
+        # An invalidated in-flight request must not overwrite a forced refresh.
+        if self._inflight.get(source.source_id) is asyncio.current_task() and self._ttl > 0:
             self._cache[source.source_id] = (time.monotonic() + self._ttl, snapshot)
         return snapshot
+
+    async def refresh(self, source: SourceConfig) -> SubscriptionSnapshot:
+        self.invalidate(source.source_id)
+        return await self.resolve(source)
 
     def invalidate(self, source_id: str | None = None) -> None:
         if source_id is None:
             self._cache.clear()
+            self._inflight.clear()
         else:
             self._cache.pop(source_id, None)
+            self._inflight.pop(source_id, None)

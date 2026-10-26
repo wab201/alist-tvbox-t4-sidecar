@@ -17,6 +17,7 @@ def build_subscriptions_router(
     fetcher: SubscriptionFetcher | None = None,
     *,
     subscription_resolver: Any | None = None,
+    subscription_refresher: Any | None = None,
     local_snapshot_provider: Any | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -24,6 +25,7 @@ def build_subscriptions_router(
     @router.get("/t4/api/sources/{source_id}/subscription")
     async def get_subscription_snapshot(
         source_id: str,
+        refresh: bool = False,
         gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
         if not gateway_token_matches(settings.gateway_token, gateway_token):
@@ -43,7 +45,9 @@ def build_subscriptions_router(
             if local_snapshot_provider is not None:
                 snapshot = local_snapshot_provider(source_id)
             if snapshot is None:
-                if subscription_resolver is not None:
+                if refresh and subscription_refresher is not None:
+                    snapshot = await subscription_refresher(source)
+                elif subscription_resolver is not None:
                     snapshot = await subscription_resolver(source)
                 else:
                     snapshot = await resolve_subscription(source, fetcher)

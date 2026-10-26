@@ -144,10 +144,10 @@ curl -fsS http://127.0.0.1:8765/t4/health
 ### 页面操作
 
 1. 打开页面，Sidecar 会自动读取容器中的 source 和 AT 订阅配置；本地模式不需要填写 Token。
-2. 在已加载的 source 中点击“读取能力”，等待订阅插件列表出现。
-3. 选择需要调用的插件 `site`。使用环境变量订阅时，source ID 固定为 `env-at`；一个订阅含多个插件时，必须选择 `site`。
-4. 点击“首页冒烟”测试当前插件的首页请求。
-5. 点击“复制 FM 地址”复制当前插件的 FM 兼容入口，直接粘贴到 FM 影视中使用；页面也保留“复制首页测试地址”用于接口排查。
+2. AT 订阅插件列表会自动读取；需要立即同步 AT 变更时点击“重新读取 AT 订阅”。
+3. 点击顶部的“复制影视订阅地址”，在 FM 影视点播配置中导入；无需逐个选择插件或填写 `site`。
+4. 需要诊断时，在 AT 订阅下选择插件，点击“首页冒烟”测试首页。
+5. “复制插件 API”只复制单个站点的 `api`，不是可导入点播配置的完整订阅。
 6. 修改 `.env` 后先重新创建容器，再刷新页面。
 
 页面中的“上传本地插件”支持标准 Python `Spider` 和 Sidecar JavaScript 插件。上传后会自动注册
@@ -156,13 +156,22 @@ curl -fsS http://127.0.0.1:8765/t4/health
 Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 导入方式；JavaScript
 插件按 Sidecar 合同导出 `homeContent`、`categoryContent`、`detailContent`、`searchContent`、
 `playerContent`，需要追更或检查更新时再导出 `action`。这不是对任意 Drpy/TVBox `rule`
-文件的无条件兼容，上传后应先用页面的首页、详情和播放入口做冒烟验证。
+文件的无条件兼容，上传后应先点击页面的“首页冒烟”，再使用 T4 的详情和播放接口验证完整链路。
+
+本地插件列表每行提供上移、下移、重命名、刷新运行实例、首页冒烟、复制地址和删除按钮，
+图标悬停会显示名称。删除前需要确认；重命名和排序不改变 FM 地址，重启后仍保留。
+同内容重复上传不会新增插件；同名不同内容会自动编号。刷新运行实例会校验当前文件并回收旧实例，
+下一次调用重新初始化；“刷新本地列表”只重载列表。删除最后一个插件会移除 `local-uploaded` source。
+
+这些管理操作仅影响 Sidecar 自己存储的文件，不修改 AT 原始插件。AT 插件仍由 AT 管理，
+修改后在此页面强制重读订阅。不要删除 Docker volume，否则上传文件和名称、顺序都会丢失。
+保持 Compose 默认的单 Gateway 进程，不要让多个 Uvicorn worker 共同写入插件目录。
 
 页面会标注不能转成标准 T4 的本地能力或页面入口，例如 `csp_Push`、`csp_WebHome`。这类条目不会被当作可播放的标准 VOD 插件。
 
 ### 页面安全规则
 
-- 本地模式不需要 Gateway Token，复制的 FM 地址可直接使用。
+- 本地模式不需要 Gateway Token，顶部复制的影视订阅可直接导入。
 - 如果启用了保护模式，Token 仅临时保存在当前浏览器标签页的 `sessionStorage`。
 - 不要把 Token 粘贴到公开工单、截图、浏览器书签或公网 URL。
 - 生产环境优先使用支持自定义请求头的 T4 客户端，或把服务放在 HTTPS、VPN 和访问控制之后。
@@ -179,13 +188,16 @@ Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 
 
 ## 六、在 T4 客户端中使用
 
-Sidecar 的 T4 根地址为：
+FM 影视优先导入管理台顶部复制的完整点播订阅。本地模式地址为：
 
 ```text
-http://NAS_IP:8765/t4/
+http://NAS_IP:8765/t4/config.json
 ```
 
-如果启用了保护模式，通过请求头传递 Gateway Token：
+保护模式请复制页面自动生成的订阅地址，影视无需额外配置请求头。
+下面的显式模块接口仅供开发调试，不应作为完整点播订阅导入。
+
+直接调试模块 API 且启用了保护模式时，通过请求头传递 Gateway Token：
 
 ```http
 X-T4-Token: 你的T4_GATEWAY_TOKEN
@@ -228,6 +240,33 @@ docker compose up -d t4-sidecar
 ```
 
 回滚就是把 `T4_IMAGE` 改回上一个已验证的 `sha-` 标签，再重新执行上述两条命令。不要在 NAS 上使用 `docker compose up --build`，那会绕过 GHCR 镜像并在 NAS 本地构建。
+
+### 已有 NAS 实例升级
+
+先通过 `docker inspect` 核对 `com.docker.compose.project.working_dir`、
+`com.docker.compose.project.config_files` 和 `/data` 挂载，始终在原 Compose 目录升级。
+备份原 Compose、`.env` 和数据卷，备份仅留在 NAS 并限制权限；保留旧镜像以便回滚。
+只重建 `t4-sidecar`，不要执行 `down -v`，也不要重启 AT 本体。
+
+如果现有凭证没有私有 GHCR 的 `read:packages` 权限，可以使用同一次 GitHub Actions 构建生成的
+`nas-image-<完整提交 SHA>` 归档，无需改动账号权限或把令牌保存到 NAS。归档保留 3 天，
+包含镜像、`SHA256SUMS` 和 `image-id.json`，可从对应构建的 Artifacts 下载。
+将归档解压到 NAS 的独立升级目录后执行：
+
+```bash
+sha256sum -c SHA256SUMS
+gzip -dc t4-sidecar.tar.gz | docker load
+```
+
+核对导入镜像 ID 与 `image-id.json` 一致、镜像的 `org.opencontainers.image.revision`
+等于目标提交，再在原 `.env` 中仅更新 `T4_IMAGE`，保留订阅和其他配置，执行：
+
+```bash
+docker compose config --quiet
+docker compose up -d --no-deps --no-build --pull never t4-sidecar
+```
+
+导入的镜像与 GHCR 发布物来自同一构建，不在 NAS 重新构建。升级后检查健康状态、统一订阅和真实插件调用。
 
 ## 八、可选：同源 `/t4/` 入口
 
@@ -299,13 +338,20 @@ env-at
 
 ### FM 影视如何使用
 
-1. 打开 Sidecar Web 管理入口，页面会自动读取配置。
-2. 点击 source 的“读取能力”。
-3. 选择需要的插件，例如 `csp_BiliBili`。
-4. 点击“复制 FM 地址”。
-5. 在 FM 影视中新增接口/源，把复制的地址作为接口地址保存。
+1. 用 NAS 的局域网 IP 打开 Sidecar 管理台，例如 `http://NAS_IP:8765/t4/`。
+2. 点击顶部的“复制影视订阅地址”。
+3. 在 FM 影视的“设置 → 配置 → 点播”中粘贴保存；菜单名称随版本可能略有不同。
+4. 在影视的站点列表选择 Bilibili、我的追更或上传的插件。
 
-每个插件对应一条 FM 地址。`csp_BiliBili`、`csp_Media` 等插件不能共用同一条地址，因为 Sidecar 需要根据地址自动选择对应插件。FM 地址已经包含访问授权，不需要再填写 `source`、`site` 或 `X-T4-Token`。
+默认本地模式统一订阅为 `http://NAS_IP:8765/t4/config.json`，自动包含所有可执行插件，
+不需要逐个复制 API、编写 JSON 或配置 `source`、`site`、`X-T4-Token`。
+电视不能使用电脑的 `127.0.0.1` 或 `localhost`。页面通过局域网 IP 打开后，订阅中的站点 API
+会使用对应主机地址；反向代理应保留外部 Host，HTTPS 代理还需正确传递并信任转发协议。
+新增、删除、排序或改名插件后，在影视中刷新配置即可同步；站点 key 与名称和顺序无关。
+`csp_Push`、WebHome 等非服务端 VOD 能力不会进入 type=4 站点列表。
+
+逐插件“复制插件 API”生成的是站点 `api` 地址，不是完整点播订阅。该地址接收 `t`、`ids`、
+`wd`、`play` 等标准参数，并支持 URL-safe Base64 分类筛选及 GET、JSON POST、表单 POST。
 
 本地模式下 FM 地址是绑定插件的便捷入口；保护模式下 FM 地址同时属于访问凭证。建议只在家庭网络、VPN 或 HTTPS
 反向代理中使用，不要发布到公网、截图或公共配置仓库。修改 `T4_GATEWAY_TOKEN` 后，保护模式旧 FM 地址会失效，

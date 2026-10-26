@@ -7,427 +7,441 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f4f6f8;
-      --panel: #ffffff;
-      --line: #d9dee5;
-      --text: #18212b;
-      --muted: #697586;
-      --accent: #1f6feb;
-      --danger: #b42318;
-      --ok: #067647;
+      --bg: #f4f6f8; --panel: #fff; --line: #d9dee5; --text: #18212b;
+      --muted: #526174; --accent: #1f6feb; --danger: #b42318; --ok: #067647;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
-    }
-    main { max-width: 1040px; margin: 0 auto; padding: 28px 20px 48px; }
-    header { display: flex; justify-content: space-between; gap: 20px; align-items: end; margin-bottom: 22px; }
-    h1, h2, p { margin: 0; }
-    h1 { font-size: 24px; letter-spacing: 0; }
-    h2 { font-size: 16px; letter-spacing: 0; }
-    .muted { color: var(--muted); }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px; margin-bottom: 16px; }
-    .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: end; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+    main { max-width: 1120px; margin: auto; padding: 24px 20px 48px; }
+    h1, h2, p { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 24px; } h2 { font-size: 17px; }
+    header, .section-head, .source-head, .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    header { margin-bottom: 12px; } .muted, .badge { color: var(--muted); }
+    .badge, .plugin-id { font-size: 12px; overflow-wrap: anywhere; }
+    section { border-top: 1px solid var(--line); padding: 22px 0; }
+    .section-head { margin-bottom: 14px; }
+    input, select, button { font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
+    input, select { min-height: 38px; padding: 8px 10px; width: 100%; min-width: 0; }
     label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
-    input, select, button {
-      min-height: 38px; border: 1px solid var(--line); border-radius: 5px;
-      background: #fff; color: var(--text); padding: 8px 11px; font: inherit;
-    }
-    select { width: 100%; }
-    button { cursor: pointer; font-weight: 600; }
-    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    button:disabled { cursor: not-allowed; opacity: .6; }
-    .status { min-height: 22px; margin-top: 10px; }
-    .status.error { color: var(--danger); }
-    .status.ok { color: var(--ok); }
-    .entry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
-    .entry-value { display: block; overflow-wrap: anywhere; margin-top: 6px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .help { margin: 0; padding-left: 20px; color: var(--muted); }
-    .help li + li { margin-top: 5px; }
-    .notice { margin-top: 12px; padding: 10px 12px; background: #f8fafc; border-left: 3px solid var(--accent); color: var(--muted); }
-    .sources { display: grid; gap: 10px; }
-    .source { border-top: 1px solid var(--line); padding-top: 14px; }
-    .source:first-child { border-top: 0; padding-top: 0; }
-    .source-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-    .badge { color: var(--muted); font-size: 12px; }
-    .plugin-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
-    .plugin-note { margin-top: 6px; }
-    .fm-entry { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-top: 10px; }
-    .fm-entry code { overflow-wrap: anywhere; color: var(--text); }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .snapshot { margin-top: 12px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f8fafc; padding: 10px; overflow: auto; }
-    .empty { color: var(--muted); padding: 12px 0; }
+    button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 38px; padding: 8px 12px; cursor: pointer; flex-shrink: 0; }
+    button:hover { background: #edf2f7; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button:disabled { cursor: not-allowed; opacity: .4; }
+    button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .danger { color: var(--danger); } button.danger:hover { background: #fff0ee; }
+    button img { width: 17px; height: 17px; flex-shrink: 0; }
+    button.primary img { filter: invert(1); }
+    .icon { width: 36px; height: 36px; min-height: 36px; padding: 8px; }
+    .status { margin-bottom: 12px; min-height: 34px; padding: 6px 10px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+    .status.ok { color: var(--ok); border-color: var(--ok); background: #eaf6ef; }
+    .status.error { color: var(--danger); border-color: var(--danger); background: #fff0ee; }
+    .controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
+    .plugin-list { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+    .plugin-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 14px; border-top: 1px solid var(--line); }
+    .plugin-row:first-child { border-top: 0; }
+    .position { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .plugin-name { font-weight: 600; overflow-wrap: anywhere; }
+    .plugin-id { color: var(--muted); }
+    .row-actions { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+    .plugin-url { display: block; font: 11px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; margin-top: 5px; }
+    .empty { padding: 20px; color: var(--muted); text-align: center; }
+    .source { border-top: 1px solid var(--line); padding: 16px 0; }
+    .source:first-child { border-top: 0; }
+    .source-head h2 { font-size: 15px; }
+    .source-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
+    .fm-entry { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .fm-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+    .snapshot { margin-top: 12px; padding: 12px; background: #e9eef3; max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+    .entry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .entry-value { display: block; font-size: 12px; overflow-wrap: anywhere; }
+    .subscription-entry { display: flex; align-items: center; gap: 12px; }
+    .subscription-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+    #local-address-warning { color: var(--danger); margin-top: 10px; }
+    dialog { border: 1px solid var(--line); border-radius: 6px; padding: 24px; width: 420px; max-width: calc(100% - 32px); }
+    dialog::backdrop { background: #18212b66; }
+    dialog h2 { margin-bottom: 14px; } dialog p { margin-bottom: 16px; overflow-wrap: anywhere; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    #dialog-error { color: var(--danger); min-height: 22px; margin-top: 8px; }
     @media (max-width: 700px) {
-      header { display: block; }
-      header .muted { margin-top: 5px; }
-      .controls { grid-template-columns: 1fr; }
-      .entry-grid, .plugin-controls, .fm-entry { grid-template-columns: 1fr; }
+      main { padding: 18px 12px 32px; }
+      header { align-items: start; } h1 { font-size: 21px; }
+      .plugin-row { grid-template-columns: 24px minmax(0, 1fr); padding: 12px; }
+      .row-actions { grid-column: 2; justify-content: flex-start; }
+      .controls, .source-controls, .entry-grid { grid-template-columns: 1fr; }
+      .fm-entry { flex-wrap: wrap; } .fm-entry code { flex-basis: 100%; }
+      .section-head { flex-wrap: wrap; }
     }
   </style>
 </head>
 <body>
 <main>
   <header>
-    <div>
-      <h1>T4 Sidecar 管理台</h1>
-      <p class="muted">AList-TVBox 订阅转译与 T4 接口检查</p>
-    </div>
-    <span id="health" class="badge">未检查</span>
+    <h1>T4 Sidecar 管理台</h1>
+    <span id="health" class="badge">连接中</span>
   </header>
-
-  <section class="panel">
-    <h2>进入地址</h2>
-    <div class="entry-grid">
-      <div>
-        <div class="muted">Web 管理入口</div>
-        <code id="entry-url" class="entry-value"></code>
-      </div>
-      <div>
-        <div class="muted">健康检查地址</div>
-        <code id="health-url" class="entry-value"></code>
-      </div>
-    </div>
-    <div class="notice">
-      这是 Sidecar 的独立管理入口，不会修改 AT 的页面、数据库或原始插件。T4 客户端调用时使用同一服务的
-      <code>/t4/api/</code> 接口。默认本地模式不需要额外令牌；如果部署者主动配置了
-      <code>T4_GATEWAY_TOKEN</code>，页面会自动显示保护模式。
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>使用说明</h2>
-    <ol class="help">
-      <li>打开页面后，Sidecar 会自动读取容器中的 source 配置和 AT 订阅，不需要手工拼接订阅参数。</li>
-      <li>在每个 source 中点击“读取能力”，页面会读取脱敏后的订阅信息并列出可用插件。</li>
-      <li>选择要调用的插件；多插件订阅必须选择对应的 <code>site</code>，例如 <code>csp_BiliBili</code> 或 <code>csp_Media</code>。</li>
-      <li>点击“首页冒烟”验证当前插件，或点击“复制 FM 地址”获取该插件的 FM 兼容入口。</li>
-    </ol>
-    <div class="notice">
-      本地模式下复制的 FM 地址可直接使用。若部署者启用了可选保护模式，Token 只临时保存在当前浏览器标签页的
-      <code>sessionStorage</code> 中，复制的 FM 地址会自动绑定插件访问钥匙。
-    </div>
-  </section>
-
-  <section id="auth-panel" class="panel" hidden>
+  <div id="status" class="status muted" role="status" aria-live="polite">正在加载</div>
+  <section id="auth-panel" hidden>
     <div class="controls">
-      <label>Gateway Token
-        <input id="token" type="password" autocomplete="off" placeholder="输入 .env 中的 T4_GATEWAY_TOKEN">
-      </label>
-      <button id="save" class="primary">加载</button>
-      <button id="clear">清除</button>
+      <label>Gateway Token<input id="token" type="password" autocomplete="off"></label>
+      <div class="toolbar"><button id="save" class="primary">加载</button><button id="clear">清除</button></div>
     </div>
-    <div id="status" class="status muted"></div>
   </section>
-
-  <section class="panel">
-    <h2>上传本地插件</h2>
+  <section aria-labelledby="subscription-heading">
+    <div class="section-head">
+      <h2 id="subscription-heading">影视订阅</h2>
+      <button id="copy-subscription" class="icon" title="复制影视订阅地址" aria-label="复制影视订阅地址" disabled><img src="/t4/assets/icons/copy.svg" alt=""></button>
+    </div>
+    <div class="subscription-entry"><code id="subscription-url">正在读取</code></div>
+    <p id="local-address-warning" hidden>当前为本机地址，电视端不可访问。请通过 NAS 或电脑的局域网 IP 打开管理台。</p>
+  </section>
+  <section aria-labelledby="upload-heading">
+    <div class="section-head"><h2 id="upload-heading">上传本地插件</h2><span class="badge">Python / JavaScript</span></div>
     <div class="controls">
-      <label>Python / JavaScript 爬虫文件
-        <input id="plugin-file" type="file" accept=".py,.js">
-      </label>
-      <button id="upload-plugin" class="primary">上传并注册</button>
-    </div>
-    <div class="notice">
-      Python 文件需要包含标准 <code>Spider</code> 类；JavaScript 文件需要导出
-      <code>homeContent</code>、<code>categoryContent</code>、<code>detailContent</code>、
-      <code>searchContent</code>、<code>playerContent</code> 等方法。上传后会自动出现在
-      <code>local-uploaded</code> source。
+      <label>插件文件<input id="plugin-file" type="file" accept=".py,.js"></label>
+      <button id="upload-plugin" class="primary"><img src="/t4/assets/icons/upload.svg" alt="">上传并注册</button>
     </div>
   </section>
-
-  <section class="panel">
-    <div class="source-head">
-      <h2>已配置 source</h2>
-      <button id="refresh">刷新</button>
+  <section aria-labelledby="plugins-heading">
+    <div class="section-head">
+      <h2 id="plugins-heading">本地插件 <span id="plugin-count" class="badge">0</span></h2>
+      <button id="reload-plugins" class="icon" title="刷新本地列表" aria-label="刷新本地列表"><img src="/t4/assets/icons/refresh-cw.svg" alt=""></button>
     </div>
-    <div id="sources" class="sources"><div class="empty">尚未加载</div></div>
+    <div id="plugins" class="plugin-list" aria-busy="false"><div class="empty">正在加载插件</div></div>
+    <pre id="plugin-result" class="snapshot" hidden aria-live="polite"></pre>
+  </section>
+  <section aria-labelledby="sources-heading">
+    <div class="section-head">
+      <h2 id="sources-heading">AT 订阅 <span class="badge">只读</span></h2>
+      <button id="refresh" class="icon" title="重新读取 AT 订阅" aria-label="重新读取 AT 订阅"><img src="/t4/assets/icons/refresh-cw.svg" alt=""></button>
+    </div>
+    <div id="sources"><div class="empty">正在加载订阅</div></div>
+  </section>
+  <section class="entry-grid">
+    <div><span class="badge">Web 管理入口</span><code id="entry-url" class="entry-value"></code></div>
+    <div><span class="badge">健康检查地址</span><code id="health-url" class="entry-value"></code></div>
   </section>
 </main>
+<dialog id="manage-dialog" aria-labelledby="dialog-title">
+  <form id="manage-form">
+    <h2 id="dialog-title"></h2>
+    <p id="dialog-message" hidden></p>
+    <label id="name-label">插件名称<input id="plugin-name" maxlength="80" autocomplete="off" required></label>
+    <div id="dialog-error" role="alert"></div>
+    <div class="dialog-actions">
+      <button id="dialog-cancel" type="button">取消</button>
+      <button id="dialog-submit" class="primary" type="submit">保存</button>
+    </div>
+  </form>
+</dialog>
 <script>
-  const tokenInput = document.querySelector("#token");
-  const statusNode = document.querySelector("#status");
-  const sourcesNode = document.querySelector("#sources");
-  const healthNode = document.querySelector("#health");
-  const authPanel = document.querySelector("#auth-panel");
-  const pluginFileInput = document.querySelector("#plugin-file");
-  const uploadPluginButton = document.querySelector("#upload-plugin");
+  const $ = (selector) => document.querySelector(selector);
+  const tokenInput = $("#token");
+  const pluginsNode = $("#plugins");
+  const sourcesNode = $("#sources");
+  const dialog = $("#manage-dialog");
   const savedToken = sessionStorage.getItem("t4_token") || "";
   let authRequired = false;
+  let plugins = [];
+  let busy = false;
+  let dialogOperation = null;
+  let subscriptionUrl = "";
+  const selectedSites = new Map();
   tokenInput.value = savedToken;
 
   function setStatus(text, kind = "muted") {
-    statusNode.textContent = text;
-    statusNode.className = `status ${kind}`;
+    $("#status").textContent = text;
+    $("#status").className = `status ${kind}`;
   }
-
   function headers() {
     return authRequired && tokenInput.value ? {"X-T4-Token": tokenInput.value} : {};
   }
-
   async function request(path, options = {}) {
-    const response = await fetch(path, {
-      ...options,
-      headers: {...headers(), ...(options.headers || {})}
-    });
+    const response = await fetch(path, {...options, headers: {...headers(), ...(options.headers || {})}});
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload?.detail?.message || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(payload?.detail?.message || (response.status === 422 ? "提交的数据格式不正确" : `HTTP ${response.status}`));
     return payload;
   }
-
-  async function checkHealth() {
-    try {
-      const payload = await request("/t4/health", {headers: {}});
-      authRequired = Boolean(payload.auth_required);
-      authPanel.hidden = !authRequired;
-      healthNode.textContent = `${payload.status} · ${payload.version}`;
-      healthNode.className = "badge";
-      return true;
-    } catch (error) {
-      healthNode.textContent = "不可用";
-      healthNode.className = "badge";
-      return false;
+  function jsonOptions(method, data) {
+    return {method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)};
+  }
+  function fmUrl(plugin) { return new URL(plugin.fm_path, location.origin).href; }
+  async function loadSubscriptionLink() {
+    const payload = await request("/t4/api/client-config");
+    subscriptionUrl = new URL(payload.subscription_path, location.origin).href;
+    $("#subscription-url").textContent = subscriptionUrl;
+    $("#copy-subscription").disabled = false;
+    $("#local-address-warning").hidden = !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  }
+  $("#copy-subscription").onclick = () => copyText(subscriptionUrl)
+    .then(() => setStatus("影视订阅地址已复制", "ok"))
+    .catch(error => setStatus(error.message, "error"));
+  async function copyText(value) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(value);
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.cssText = "position:fixed;opacity:0";
+    document.body.append(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) throw new Error("当前浏览器不允许复制，请手动复制页面中的地址");
+  }
+  function iconButton(icon, label, action) {
+    const button = document.createElement("button");
+    button.className = "icon";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.dataset.action = action;
+    const image = document.createElement("img");
+    image.src = `/t4/assets/icons/${icon}.svg`;
+    image.alt = "";
+    button.append(image);
+    return button;
+  }
+  async function runOperation(operation) {
+    if (busy) return;
+    busy = true;
+    pluginsNode.setAttribute("aria-busy", "true");
+    document.querySelectorAll("#plugins button, #upload-plugin, #reload-plugins").forEach(button => { button.disabled = true; });
+    try { await operation(); }
+    catch (error) { setStatus(error.message, "error"); }
+    finally {
+      busy = false;
+      uploadButton.disabled = false;
+      $("#reload-plugins").disabled = false;
+      pluginsNode.setAttribute("aria-busy", "false");
+      renderPlugins();
     }
   }
-
-  function renderSources(sources) {
-    sourcesNode.replaceChildren();
-    if (!sources.length) {
-      sourcesNode.innerHTML = '<div class="empty">没有已配置 source</div>';
+  async function loadPlugins() {
+    const payload = await request("/t4/api/plugins");
+    plugins = payload.plugins || [];
+    if (!busy) renderPlugins();
+  }
+  function showDialog(mode, plugin) {
+    dialogOperation = {mode, plugin};
+    const deleting = mode === "delete";
+    $("#dialog-title").textContent = deleting ? "删除插件" : "重命名插件";
+    $("#dialog-message").hidden = !deleting;
+    $("#dialog-message").textContent = `确认删除“${plugin.name}”？本地文件和运行实例将被移除，该插件 API 将失效。`;
+    $("#name-label").hidden = deleting;
+    $("#plugin-name").disabled = deleting;
+    $("#plugin-name").value = plugin.name;
+    $("#dialog-error").textContent = "";
+    $("#dialog-submit").textContent = deleting ? "删除" : "保存";
+    $("#dialog-submit").className = deleting ? "danger" : "primary";
+    dialog.showModal();
+    if (!deleting) $("#plugin-name").select();
+    else $("#dialog-cancel").focus();
+  }
+  function renderPlugins() {
+    pluginsNode.replaceChildren();
+    $("#plugin-count").textContent = plugins.length;
+    if (!plugins.length) {
+      pluginsNode.innerHTML = '<div class="empty">暂无本地插件</div>';
       return;
     }
-    for (const source of sources) {
-      const article = document.createElement("article");
-      article.className = "source";
-      article.innerHTML = `
-        <div class="source-head">
-          <h2></h2>
-          <span class="badge"></span>
-        </div>
-        <div class="badge"></div>
-        <div class="plugin-controls">
-          <label>插件 / site
-            <select data-role="plugin" disabled>
-              <option value="">先点击“读取能力”</option>
-            </select>
-          </label>
-          <button data-action="snapshot">读取能力</button>
-        </div>
-        <div class="badge plugin-note" data-role="plugin-note">多插件订阅必须指定 site</div>
-        <div class="fm-entry">
-          <span class="badge">FM兼容地址</span>
-          <code data-role="fm-link">读取能力后自动生成</code>
-          <button data-action="copy-fm" disabled>复制 FM 地址</button>
-        </div>
-        <div class="actions">
-          <button data-action="smoke" disabled>首页冒烟</button>
-          <button data-action="copy" disabled>复制首页测试地址</button>
-        </div>
-        <pre class="snapshot" hidden></pre>`;
-      article.querySelector("h2").textContent = source.name;
-      article.querySelector(".source-head .badge").textContent = source.status;
-      article.querySelector(".source-head + .badge").textContent =
-        `${source.id} · ${(source.capabilities || []).join(", ") || "待检测"}`;
-      const pluginSelect = article.querySelector('[data-role="plugin"]');
-      const pluginNote = article.querySelector('[data-role="plugin-note"]');
-      const smokeButton = article.querySelector('[data-action="smoke"]');
-      const copyButton = article.querySelector('[data-action="copy"]');
-      const copyFmButton = article.querySelector('[data-action="copy-fm"]');
-      const fmLinkNode = article.querySelector('[data-role="fm-link"]');
-      const snapshot = article.querySelector(".snapshot");
-      const selectedPlugin = () => pluginSelect.value || "";
-      const selectedPluginInfo = () =>
-        (source.plugins || []).find((item) => item.id === selectedPlugin());
-      const updateActionState = () => {
-        const plugin = selectedPluginInfo();
-        const enabled = Boolean(plugin && plugin.t4_supported !== false);
-        smokeButton.disabled = !enabled;
-        copyButton.disabled = !enabled;
-        copyFmButton.disabled = !plugin?.fm_path;
-        fmLinkNode.textContent = plugin?.fm_path
-          ? new URL(plugin.fm_path, location.origin).href
-          : "读取能力后选择支持标准 T4 的插件";
-      };
-      const renderPlugins = (plugins) => {
-        pluginSelect.replaceChildren();
-        const supported = plugins.filter((plugin) => plugin.t4_supported !== false);
-        if (!plugins.length) {
-          pluginSelect.add(new Option("没有可用插件", ""));
-          pluginSelect.disabled = true;
-          pluginNote.textContent = "订阅中没有可供 Sidecar 调用的插件";
-          updateActionState();
-          return;
-        }
-        if (supported.length > 1) {
-          pluginSelect.add(new Option("请选择插件 site", ""));
-        }
-        for (const plugin of plugins) {
-          const suffix = plugin.t4_supported === false
-            ? `（${plugin.unsupported_reason || "不支持标准 T4"}）`
-            : "";
-          const option = new Option(`${plugin.name} · ${plugin.id}${suffix}`, plugin.id);
-          option.disabled = plugin.t4_supported === false;
-          pluginSelect.add(option);
-        }
-        pluginSelect.disabled = supported.length === 0;
-        if (supported.length === 1) {
-          pluginSelect.value = supported[0].id;
-          pluginNote.textContent = `当前插件：${supported[0].name} · ${supported[0].id}`;
-        } else if (supported.length > 1) {
-          pluginSelect.value = "";
-          pluginNote.textContent = `已发现 ${supported.length} 个可用插件，请先选择 site`;
-        } else {
-          pluginNote.textContent = "订阅中的插件均不是标准 T4 服务";
-        }
-        updateActionState();
-      };
-      const copyText = async (value) => {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(value);
-          return;
-        }
-        const textarea = document.createElement("textarea");
-        textarea.value = value;
-        textarea.setAttribute("readonly", "");
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.append(textarea);
-        textarea.select();
-        const copied = document.execCommand("copy");
-        textarea.remove();
-        if (!copied) throw new Error("当前浏览器不允许复制，请手动复制页面中的地址");
-      };
-      const loadCapabilities = async () => {
-        try {
-          snapshot.hidden = false;
-          snapshot.textContent = "读取订阅能力中...";
-          const payload = await request(
-            `/t4/api/sources/${encodeURIComponent(source.id)}/subscription`
-          );
-          source.plugins = payload.plugins || [];
-          renderPlugins(payload.plugins || []);
-          snapshot.textContent = JSON.stringify(payload, null, 2);
-          setStatus(`${source.name} 能力读取完成`, "ok");
-        } catch (error) {
-          snapshot.hidden = false;
-          snapshot.textContent = String(error.message);
-          renderPlugins([]);
-          setStatus(error.message, "error");
-        }
-      };
-      article.querySelector('[data-action="snapshot"]').onclick = loadCapabilities;
-      pluginSelect.onchange = () => {
-        const plugin = selectedPluginInfo();
-        pluginNote.textContent = plugin
-          ? `${plugin.name} · ${plugin.id} · ${(plugin.capabilities || []).join(", ") || "无标准 T4 能力"}`
-          : "多插件订阅必须指定 site";
-        updateActionState();
-      };
-      article.querySelector('[data-action="smoke"]').onclick = async () => {
-        try {
-          const plugin = selectedPlugin();
-          const payload = await request(
-            `/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(plugin)}`
-          );
-          snapshot.hidden = false;
-          snapshot.textContent = JSON.stringify(payload, null, 2);
-          setStatus(`${source.name} 首页冒烟通过`, "ok");
-        } catch (error) {
-          snapshot.hidden = false;
-          snapshot.textContent = String(error.message);
-          setStatus(error.message, "error");
-        }
-      };
-      article.querySelector('[data-action="copy"]').onclick = async () => {
-        const plugin = selectedPlugin();
-        const url = `${location.origin}/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(plugin)}`;
-        try {
-          await copyText(url);
-          setStatus(
-            authRequired
-              ? "T4 地址已复制；保护模式请通过 X-T4-Token 请求头携带令牌"
-              : "T4 地址已复制，可直接用于 T4 客户端",
-            "ok"
-          );
-        } catch (error) {
-          setStatus(error.message, "error");
-        }
-      };
-      copyFmButton.onclick = async () => {
-        const plugin = selectedPluginInfo();
-        if (!plugin?.fm_path) return;
-        try {
-          await copyText(new URL(plugin.fm_path, location.origin).href);
-          setStatus("FM 兼容地址已复制，可直接添加到 FM 影视", "ok");
-        } catch (error) {
-          setStatus(error.message, "error");
-        }
-      };
-      sourcesNode.append(article);
-    }
-  }
-
-  async function loadSources() {
-    sessionStorage.setItem("t4_token", tokenInput.value);
-    setStatus("读取中...");
-    try {
-      const payload = await request("/t4/api/sources");
-      renderSources(payload.sources || []);
-      setStatus(`已加载 ${(payload.sources || []).length} 个 source`, "ok");
-    } catch (error) {
-      renderSources([]);
-      setStatus(error.message, "error");
-    }
-  }
-
-  async function uploadPlugin() {
-    const file = pluginFileInput.files[0];
-    if (!file) {
-      setStatus("请选择 .py 或 .js 文件", "error");
-      return;
-    }
-    const form = new FormData();
-    form.append("file", file);
-    uploadPluginButton.disabled = true;
-    setStatus("上传并校验插件中...");
-    try {
-      const response = await fetch("/t4/api/plugins/upload", {
-        method: "POST",
-        headers: headers(),
-        body: form
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.detail?.message || `HTTP ${response.status}`);
+    plugins.forEach((plugin, index) => {
+      const row = document.createElement("div");
+      row.className = "plugin-row";
+      row.dataset.pluginId = plugin.id;
+      row.innerHTML = '<span class="position"></span><div><div class="plugin-name"></div><div class="plugin-id"></div><code class="plugin-url"></code></div><div class="row-actions"></div>';
+      row.querySelector(".position").textContent = index + 1;
+      row.querySelector(".plugin-name").textContent = plugin.name;
+      row.querySelector(".plugin-id").textContent = `${plugin.type === "javascript" ? "JS" : "PY"} · ${plugin.id}`;
+      row.querySelector(".plugin-url").textContent = fmUrl(plugin);
+      const actions = row.querySelector(".row-actions");
+      for (const [icon, label, action] of [
+        ["arrow-up", "上移", "up"], ["arrow-down", "下移", "down"], ["pencil", "重命名", "rename"],
+        ["refresh-cw", "刷新运行实例", "refresh"], ["play", "首页冒烟", "smoke"], ["copy", "复制插件 API", "copy"],
+        ["trash-2", "删除", "delete"]
+      ]) {
+        const button = iconButton(icon, label, action);
+        if (action === "up") button.disabled = index === 0;
+        if (action === "down") button.disabled = index === plugins.length - 1;
+        if (action === "delete") button.classList.add("danger");
+        button.onclick = () => {
+          if (action === "rename" || action === "delete") { showDialog(action, plugin); return; }
+          runOperation(async () => {
+            if (action === "up" || action === "down") {
+              const ids = plugins.map(item => item.id);
+              const target = index + (action === "up" ? -1 : 1);
+              [ids[index], ids[target]] = [ids[target], ids[index]];
+              await request("/t4/api/plugins/reorder", jsonOptions("POST", {plugin_ids: ids}));
+              await loadPlugins();
+              setStatus("插件顺序已保存", "ok");
+            } else if (action === "refresh") {
+              await request(`/t4/api/plugins/${plugin.id}/refresh`, {method: "POST"});
+              setStatus(`${plugin.name} 已刷新，下次调用会重新初始化`, "ok");
+            } else if (action === "copy") {
+              await copyText(fmUrl(plugin));
+              setStatus("插件 API 地址已复制", "ok");
+            } else if (action === "smoke") {
+              const payload = await request(`/t4/api/home?source=local-uploaded&site=${encodeURIComponent(plugin.id)}`);
+              $("#plugin-result").hidden = false;
+              $("#plugin-result").textContent = JSON.stringify(payload, null, 2);
+              setStatus(`${plugin.name} 首页冒烟通过`, "ok");
+            }
+          });
+        };
+        actions.append(button);
       }
-      setStatus(`插件 ${payload.plugin.name} 已注册`, "ok");
-      pluginFileInput.value = "";
-      await loadSources();
+      pluginsNode.append(row);
+    });
+  }
+  $("#dialog-cancel").onclick = () => dialog.close();
+  $("#manage-form").onsubmit = async event => {
+    event.preventDefault();
+    const {mode, plugin} = dialogOperation;
+    $("#dialog-submit").disabled = true;
+    $("#dialog-cancel").disabled = true;
+    try {
+      if (mode === "delete") await request(`/t4/api/plugins/${plugin.id}`, {method: "DELETE"});
+      else await request(`/t4/api/plugins/${plugin.id}`, jsonOptions("PATCH", {name: $("#plugin-name").value}));
+      dialog.close();
+      await loadPlugins();
+      $("#plugin-result").hidden = true;
+      setStatus(mode === "delete" ? `已删除 ${plugin.name}` : "名称已保存，插件 API 地址不变", "ok");
     } catch (error) {
+      $("#dialog-error").textContent = error.message;
       setStatus(error.message, "error");
     } finally {
-      uploadPluginButton.disabled = false;
+      $("#dialog-submit").disabled = false;
+      $("#dialog-cancel").disabled = false;
     }
+  };
+  async function loadSources(force = false) {
+    const payload = await request("/t4/api/sources");
+    sourcesNode.replaceChildren();
+    const sources = (payload.sources || []).filter(source => source.id !== "local-uploaded");
+    if (!sources.length) sourcesNode.innerHTML = '<div class="empty">暂无 AT 订阅</div>';
+    await Promise.all(sources.map(async source => {
+      const article = document.createElement("article");
+      article.className = "source";
+      article.innerHTML = '<div class="source-head"><h2></h2><span class="badge"></span></div><div class="source-controls"><label>插件 / site<select disabled><option>读取中</option></select></label><div class="toolbar"></div></div><div class="fm-entry"><code></code></div><pre class="snapshot" hidden></pre>';
+      article.querySelector("h2").textContent = source.name;
+      article.querySelector(".badge").textContent = source.id;
+      const select = article.querySelector("select");
+      select.setAttribute("aria-label", `${source.name} 插件`);
+      const output = article.querySelector(".snapshot");
+      const fmLink = article.querySelector(".fm-entry code");
+      const smoke = iconButton("play", "首页冒烟", "smoke");
+      const copy = iconButton("copy", "复制插件 API", "copy-fm");
+      const refresh = iconButton("refresh-cw", "读取能力", "snapshot");
+      article.querySelector(".toolbar").append(refresh, smoke, copy);
+      smoke.disabled = copy.disabled = true;
+      let items = [];
+      const selected = () => items.find(plugin => plugin.id === select.value);
+      select.onchange = () => {
+        const plugin = selected();
+        selectedSites.set(source.id, select.value);
+        smoke.disabled = copy.disabled = !plugin?.fm_path;
+        fmLink.textContent = plugin?.fm_path ? fmUrl(plugin) : "";
+      };
+      const load = async (refreshCache = false) => {
+        refresh.disabled = true;
+        try {
+          const snapshot = await request(`/t4/api/sources/${encodeURIComponent(source.id)}/subscription?refresh=${refreshCache}`);
+          items = snapshot.plugins || [];
+          select.replaceChildren();
+          items.forEach(plugin => {
+            const option = new Option(`${plugin.name} · ${plugin.id}${plugin.t4_supported === false ? "（非标准 T4）" : ""}`, plugin.id);
+            option.disabled = plugin.t4_supported === false;
+            select.add(option);
+          });
+          const available = items.filter(plugin => plugin.t4_supported !== false);
+          select.disabled = !available.length;
+          if (!items.length) select.add(new Option("暂无插件", ""));
+          select.value = available.find(plugin => plugin.id === selectedSites.get(source.id))?.id || available[0]?.id || "";
+          select.onchange();
+          if (snapshot.errors?.length) {
+            output.hidden = false;
+            output.textContent = snapshot.errors.join("\n");
+          } else output.hidden = true;
+        } catch (error) {
+          output.hidden = false;
+          output.textContent = error.message;
+          select.disabled = smoke.disabled = copy.disabled = true;
+          setStatus(error.message, "error");
+          throw error;
+        } finally { refresh.disabled = false; }
+      };
+      refresh.onclick = () => load(true).then(() => setStatus("AT 订阅已重新读取", "ok")).catch(() => {});
+      copy.onclick = () => copyText(fmUrl(selected())).then(() => setStatus("插件 API 地址已复制", "ok")).catch(error => setStatus(error.message, "error"));
+      smoke.onclick = async () => {
+        smoke.disabled = true;
+        try {
+          const payload = await request(`/t4/api/home?source=${encodeURIComponent(source.id)}&site=${encodeURIComponent(select.value)}`);
+          output.hidden = false;
+          output.textContent = JSON.stringify(payload, null, 2);
+          setStatus(`${selected().name} 首页冒烟通过`, "ok");
+        } catch (error) { setStatus(error.message, "error"); }
+        finally { smoke.disabled = !selected()?.fm_path; }
+      };
+      sourcesNode.append(article);
+      await load(force);
+    }));
   }
-
-  document.querySelector("#save").onclick = loadSources;
-  document.querySelector("#refresh").onclick = loadSources;
-  uploadPluginButton.onclick = uploadPlugin;
-  document.querySelector("#clear").onclick = () => {
+  const uploadButton = $("#upload-plugin");
+  uploadButton.onclick = () => runOperation(async () => {
+    const file = $("#plugin-file").files[0];
+    if (!file) throw new Error("请选择 .py 或 .js 文件");
+    const form = new FormData();
+    form.append("file", file);
+    setStatus("上传并校验插件中");
+    const payload = await request("/t4/api/plugins/upload", {method: "POST", body: form});
+    $("#plugin-file").value = "";
+    await loadPlugins();
+    setStatus(`插件 ${payload.plugin.name} 已注册`, "ok");
+  });
+  $("#reload-plugins").onclick = () => runOperation(async () => {
+    await loadPlugins();
+    setStatus("本地插件列表已刷新", "ok");
+  });
+  $("#refresh").onclick = async () => {
+    $("#refresh").disabled = true;
+    try { await loadSources(true); setStatus("AT 订阅已重新读取", "ok"); }
+    catch (error) { setStatus(error.message, "error"); }
+    finally { $("#refresh").disabled = false; }
+  };
+  async function loadAll() {
+    sessionStorage.setItem("t4_token", tokenInput.value);
+    try {
+      await loadSubscriptionLink();
+      await loadPlugins();
+      await loadSources();
+      setStatus(`已加载 ${plugins.length} 个本地插件`, "ok");
+    } catch (error) { setStatus(error.message, "error"); }
+  }
+  $("#save").onclick = loadAll;
+  $("#clear").onclick = () => {
     tokenInput.value = "";
     sessionStorage.removeItem("t4_token");
-    renderSources([]);
+    subscriptionUrl = "";
+    $("#subscription-url").textContent = "未加载";
+    $("#copy-subscription").disabled = true;
+    plugins = [];
+    renderPlugins();
+    sourcesNode.replaceChildren();
     setStatus("已清除");
   };
-  document.querySelector("#entry-url").textContent = `${location.origin}/t4/`;
-  document.querySelector("#health-url").textContent = `${location.origin}/t4/health`;
+  $("#entry-url").textContent = `${location.origin}/t4/`;
+  $("#health-url").textContent = `${location.origin}/t4/health`;
+  // T4_GATEWAY_TOKEN is optional; no extra authentication in local mode.
   (async () => {
-    if (await checkHealth()) {
-      if (!authRequired || savedToken) loadSources();
-      else setStatus("保护模式：请输入 Gateway Token 后加载");
-    }
+    try {
+      const health = await request("/t4/health");
+      authRequired = Boolean(health.auth_required);
+      $("#auth-panel").hidden = !authRequired;
+      $("#health").textContent = `${health.status} · ${health.version}`;
+      if (!authRequired || savedToken) await loadAll();
+      else {
+        $("#subscription-url").textContent = "未加载";
+        setStatus("保护模式：请输入 Gateway Token 后加载");
+      }
+    } catch (error) { $("#health").textContent = "不可用"; setStatus(error.message, "error"); }
   })();
 </script>
 </body>

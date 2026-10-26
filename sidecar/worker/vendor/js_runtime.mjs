@@ -1,5 +1,9 @@
 import { pathToFileURL } from "node:url";
 import readline from "node:readline";
+import { Console } from "node:console";
+
+// Plugin diagnostics must not share the JSON-line protocol's stdout.
+globalThis.console = new Console({ stdout: process.stderr, stderr: process.stderr });
 
 const pluginPath = process.argv[2];
 if (!pluginPath) {

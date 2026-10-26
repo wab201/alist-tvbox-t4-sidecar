@@ -66,6 +66,16 @@ class T4Adapter:
         self._opaque_ids = opaque_ids or OpaqueIdStore()
         self._subscription_resolver = subscription_resolver
         self._local_snapshot_provider = local_snapshot_provider
+        self._plugin_locks: dict[str, asyncio.Lock] = {}
+
+    def plugin_lock(self, source_id: str, plugin_id: str) -> asyncio.Lock:
+        key = f"{source_id}:{plugin_id}"
+        return self._plugin_locks.setdefault(key, asyncio.Lock())
+
+    async def reset_plugin(self, source_id: str, plugin_id: str) -> None:
+        reset = getattr(self._worker, "reset", None)
+        if reset is not None:
+            await asyncio.to_thread(reset, f"{source_id}:{plugin_id}")
 
     async def dispatch(self, request: T4Request) -> dict[str, Any]:
         source = self._sources.get(request.source_id)
@@ -80,6 +90,17 @@ class T4Adapter:
             else:
                 snapshot = await resolve_subscription(source, self._fetcher)
         plugin = snapshot.plugin_for(request.plugin_id)
+        if source.source_id == "local-uploaded":
+            async with self.plugin_lock(source.source_id, plugin.plugin_id):
+                # Management may have deleted or refreshed it while this call waited.
+                current = self._local_snapshot_provider(source.source_id)
+                plugin = current.plugin_for(plugin.plugin_id)
+                return await self._invoke(request, source, plugin)
+        return await self._invoke(request, source, plugin)
+
+    async def _invoke(
+        self, request: T4Request, source: SourceConfig, plugin: PluginDescriptor
+    ) -> dict[str, Any]:
         method, params = self._translate(request.module, request.params)
         params = self._unwrap_params(
             request.module,
@@ -279,7 +300,7 @@ class T4Adapter:
             episodes = []
             for episode in group.split("#"):
                 label, separator, raw_id = episode.partition("$")
-                if not separator:
+                if not separator or not raw_id:
                     episodes.append(episode)
                     continue
                 opaque = self._opaque_ids.put(
@@ -316,8 +337,18 @@ class T4Adapter:
 class AtvpWorkerInvoker:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
-        self._initialized: set[str] = set()
+        self._initialized: dict[str, str] = {}
         self._state_lock = threading.Lock()
+        self._locks: dict[str, threading.Lock] = {}
+
+    def _lock_for(self, runtime_key: str) -> threading.Lock:
+        with self._state_lock:
+            return self._locks.setdefault(runtime_key, threading.Lock())
+
+    def reset(self, runtime_key: str) -> None:
+        with self._lock_for(runtime_key):
+            self._initialized.pop(runtime_key, None)
+            self._pool.restart(runtime_key)
 
     def call(
         self,
@@ -326,20 +357,24 @@ class AtvpWorkerInvoker:
         method: str,
         params: dict[str, Any],
     ) -> Any:
-        with self._state_lock:
-            if runtime_key not in self._initialized:
+        with self._lock_for(runtime_key):
+            extend = plugin.worker_extend()
+            previous = self._initialized.get(runtime_key)
+            if previous != extend:
+                self._initialized.pop(runtime_key, None)
+                if previous is not None:
+                    self._pool.restart(runtime_key)
                 self._pool.request(
                     runtime_key,
                     "init",
-                    {"extend": plugin.worker_extend()},
+                    {"extend": extend},
                 )
-                self._initialized.add(runtime_key)
-        try:
-            return self._pool.request(runtime_key, method, params)
-        except Exception:
-            with self._state_lock:
-                self._initialized.discard(runtime_key)
-            raise
+                self._initialized[runtime_key] = extend
+            try:
+                return self._pool.request(runtime_key, method, params)
+            except Exception:
+                self._initialized.pop(runtime_key, None)
+                raise
 
 
 def _bool_param(value: Any, default: bool) -> bool:

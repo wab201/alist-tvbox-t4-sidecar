@@ -1,70 +1,148 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from pydantic import BaseModel, ConfigDict
 
+from sidecar.at.subscription import PluginDescriptor
 from sidecar.gateway.auth import gateway_token_matches
 from sidecar.gateway.config import Settings
 from sidecar.gateway.fm import build_fm_path
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.gateway.uploads import PluginUploadError, UploadedPluginStore
+from sidecar.t4.adapter import T4Adapter
+
+
+class RenamePlugin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+
+
+class ReorderPlugins(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    plugin_ids: list[str]
 
 
 def build_uploads_router(
     settings: Settings,
     source_registry: SourceRegistry,
     plugin_store: UploadedPluginStore,
+    adapter: T4Adapter,
 ) -> APIRouter:
     router = APIRouter()
+
+    def authorize(token: str | None) -> None:
+        if not gateway_token_matches(settings.gateway_token, token):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "unauthorized", "message": "gateway token required"},
+            )
+
+    def metadata(plugin: PluginDescriptor) -> dict[str, object]:
+        result = plugin.public_metadata()
+        result["fm_path"] = build_fm_path(
+            settings.gateway_token,
+            plugin_store.source_config.source_id,
+            plugin.plugin_id,
+        )
+        return result
+
+    def invalid(exc: PluginUploadError) -> HTTPException:
+        return HTTPException(
+            status_code=400,
+            detail={"code": "plugin_upload_invalid", "message": str(exc)},
+        )
+
+    def not_found() -> HTTPException:
+        return HTTPException(
+            status_code=404,
+            detail={"code": "plugin_not_found", "message": "插件不存在或已删除"},
+        )
+
+    @router.get("/t4/api/plugins")
+    async def list_plugins(
+        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
+    ) -> dict[str, object]:
+        authorize(gateway_token)
+        snapshot = plugin_store.snapshot_for(plugin_store.source_config.source_id)
+        return {"plugins": [metadata(plugin) for plugin in snapshot.plugins]}
+
+    @router.post("/t4/api/plugins/reorder")
+    async def reorder_plugins(
+        body: ReorderPlugins,
+        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
+    ) -> dict[str, object]:
+        authorize(gateway_token)
+        try:
+            await asyncio.to_thread(plugin_store.reorder, body.plugin_ids)
+        except PluginUploadError as exc:
+            raise invalid(exc) from exc
+        return {"reordered": True, "plugin_ids": body.plugin_ids}
 
     @router.post("/t4/api/plugins/upload")
     async def upload_plugin(
         file: UploadFile = File(...),
         gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        if not gateway_token_matches(settings.gateway_token, gateway_token):
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "unauthorized", "message": "gateway token required"},
-            )
+        authorize(gateway_token)
         try:
             content = await file.read(settings.upload_max_bytes + 1)
-            plugin = plugin_store.register(file.filename, content)
+            plugin = await asyncio.to_thread(plugin_store.register, file.filename, content)
         except PluginUploadError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "plugin_upload_invalid", "message": str(exc)},
-            ) from exc
+            raise invalid(exc) from exc
         source_registry.upsert(plugin_store.source_config)
-        metadata = plugin.public_metadata()
-        metadata["fm_path"] = build_fm_path(
-            settings.gateway_token,
-            plugin_store.source_config.source_id,
-            plugin.plugin_id,
-        )
         return {
             "source_id": plugin_store.source_config.source_id,
-            "plugin": metadata,
+            "plugin": metadata(plugin),
         }
+
+    @router.patch("/t4/api/plugins/{plugin_id}")
+    async def rename_plugin(
+        plugin_id: str,
+        body: RenamePlugin,
+        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
+    ) -> dict[str, object]:
+        authorize(gateway_token)
+        try:
+            plugin = await asyncio.to_thread(plugin_store.rename, plugin_id, body.name)
+        except KeyError as exc:
+            raise not_found() from exc
+        except PluginUploadError as exc:
+            raise invalid(exc) from exc
+        return {"plugin": metadata(plugin)}
+
+    @router.post("/t4/api/plugins/{plugin_id}/refresh")
+    async def refresh_plugin(
+        plugin_id: str,
+        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
+    ) -> dict[str, object]:
+        authorize(gateway_token)
+        source_id = plugin_store.source_config.source_id
+        async with adapter.plugin_lock(source_id, plugin_id):
+            try:
+                plugin = await asyncio.to_thread(plugin_store.validate, plugin_id)
+            except KeyError as exc:
+                raise not_found() from exc
+            except PluginUploadError as exc:
+                raise invalid(exc) from exc
+            await adapter.reset_plugin(source_id, plugin_id)
+        return {"refreshed": True, "plugin": metadata(plugin)}
 
     @router.delete("/t4/api/plugins/{plugin_id}")
     async def delete_plugin(
         plugin_id: str,
         gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        if not gateway_token_matches(settings.gateway_token, gateway_token):
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "unauthorized", "message": "gateway token required"},
-            )
-        if not plugin_store.remove(plugin_id):
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "plugin_not_found", "message": "plugin not found"},
-            )
-        if not plugin_store.has_plugins():
-            source_registry.remove(plugin_store.source_config.source_id)
+        authorize(gateway_token)
+        source_id = plugin_store.source_config.source_id
+        async with adapter.plugin_lock(source_id, plugin_id):
+            if not await asyncio.to_thread(plugin_store.remove, plugin_id):
+                raise not_found()
+            await adapter.reset_plugin(source_id, plugin_id)
+            if not plugin_store.has_plugins():
+                source_registry.remove(source_id)
         return {"deleted": True, "plugin_id": plugin_id}
 
     return router

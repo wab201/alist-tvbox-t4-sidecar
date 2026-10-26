@@ -88,6 +88,8 @@ class WorkerSession:
                 self._responses.put(response)
         except Exception as exc:
             self._responses.put(WorkerProtocolError(str(exc)))
+        finally:
+            self._responses.put(WorkerError("worker response stream closed"))
 
     def request(
         self,
@@ -137,12 +139,24 @@ class WorkerSession:
         if process is None:
             return
         if process.poll() is None:
-            process.terminate()
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+        if self._reader is not None:
+            self._reader.join(timeout=2)
+        if process.stdout is not None:
+            process.stdout.close()
 
     def __enter__(self) -> "WorkerSession":
         return self

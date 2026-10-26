@@ -144,7 +144,7 @@ class NativeAtClient:
             query = {
                 "wd": str(params.get("key") or ""),
                 "pg": str(params.get("pg") or "1"),
-                "quick": str(params.get("quick") or "true").lower(),
+                "quick": str(params.get("quick", True)).lower(),
             }
             if route == "/tg-search" and plugin.api == "csp_TgWeb":
                 query["web"] = "true"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from sidecar.at.subscription import CachedSubscriptionResolver
 from sidecar.gateway.config import Settings
@@ -16,6 +18,7 @@ from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
 from sidecar.gateway.routes.fm import build_fm_router
+from sidecar.gateway.routes.client_config import build_client_config_router
 from sidecar.gateway.routes.uploads import build_uploads_router
 from sidecar.gateway.uploads import UploadedPluginStore
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
@@ -102,22 +105,36 @@ def create_app(
     app.include_router(build_health_router(runtime_settings))
     app.include_router(build_sources_router(runtime_settings, runtime_sources))
     app.include_router(
+        build_client_config_router(
+            runtime_settings,
+            runtime_sources,
+            subscription_resolver=subscription_resolver.resolve,
+            local_snapshot_provider=upload_store.snapshot_for,
+        )
+    )
+    app.include_router(
         build_subscriptions_router(
             runtime_settings,
             runtime_sources,
             subscription_fetcher,
             subscription_resolver=subscription_resolver.resolve,
+            subscription_refresher=subscription_resolver.refresh,
             local_snapshot_provider=upload_store.snapshot_for,
         )
+    )
+    app.include_router(
+        build_uploads_router(runtime_settings, runtime_sources, upload_store, runtime_adapter)
     )
     app.include_router(build_t4_router(runtime_settings, runtime_sources, runtime_adapter))
     app.include_router(
         build_fm_router(runtime_settings, runtime_sources, runtime_adapter)
     )
-    app.include_router(
-        build_uploads_router(runtime_settings, runtime_sources, upload_store)
-    )
     app.include_router(build_web_router())
+    app.mount(
+        "/t4/assets",
+        StaticFiles(directory=Path(__file__).parents[1] / "web" / "assets"),
+        name="web-assets",
+    )
     return app
 
 

@@ -333,6 +333,63 @@ def test_cached_subscription_resolver_shares_snapshot() -> None:
     assert calls == 1
 
 
+def test_forced_refresh_cannot_be_overwritten_by_an_old_inflight_request() -> None:
+    from sidecar.at.subscription import CachedSubscriptionResolver
+
+    source = SourceConfig(
+        source_id="demo", display_name="Demo", at_base_url=AT_BASE, subscription_id="12"
+    )
+
+    async def run() -> None:
+        old_started = asyncio.Event()
+        finish_old = asyncio.Event()
+        calls = 0
+
+        async def delayed_fetcher(_source):
+            nonlocal calls
+            calls += 1
+            version = calls
+            if version == 1:
+                old_started.set()
+                await finish_old.wait()
+            return {"sites": [{"key": f"v{version}", "api": "csp_Media"}]}
+
+        resolver = CachedSubscriptionResolver(delayed_fetcher, ttl=30)
+        old = asyncio.create_task(resolver.resolve(source))
+        await old_started.wait()
+        fresh = await resolver.refresh(source)
+        finish_old.set()
+        await old
+        assert fresh.plugins[0].plugin_id == "v2"
+        assert (await resolver.resolve(source)).plugins[0].plugin_id == "v2"
+        assert calls == 2
+
+    asyncio.run(run())
+
+
+def test_subscription_route_force_refresh_bypasses_cache(tmp_path) -> None:
+    calls = 0
+
+    async def changing_fetcher(_source):
+        nonlocal calls
+        calls += 1
+        return {"sites": [{"key": f"v{calls}", "api": "csp_Media"}]}
+
+    source = SourceConfig(
+        source_id="demo", display_name="Demo", at_base_url=AT_BASE, subscription_id="12"
+    )
+    app = create_app(
+        Settings(plugin_dir=str(tmp_path)), SourceRegistry((source,)), changing_fetcher
+    )
+    with TestClient(app) as client:
+        path = "/t4/api/sources/demo/subscription"
+        assert client.get(path).json()["plugins"][0]["id"] == "v1"
+        assert client.get(path).json()["plugins"][0]["id"] == "v1"
+        assert client.get(path + "?refresh=true").json()["plugins"][0]["id"] == "v2"
+        assert client.get(path).json()["plugins"][0]["id"] == "v2"
+    assert calls == 2
+
+
 async def fake_fetcher(source: SourceConfig) -> dict[str, object]:
     assert source.subscription_token == "token-value"
     return {

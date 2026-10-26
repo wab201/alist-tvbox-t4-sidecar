@@ -8,7 +8,7 @@ from sidecar.at.native import NativeAtUnsupportedError
 from sidecar.at.subscription import SubscriptionParseError
 from sidecar.gateway.auth import gateway_token_matches
 from sidecar.gateway.config import Settings
-from sidecar.gateway.fm import fm_access_key_matches
+from sidecar.gateway.fm import fm_access_key_matches, translate_fm_request
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
 
@@ -28,10 +28,17 @@ def build_fm_router(
         "/t4/fm/{source_id}/{plugin_id}/api/{module}",
         methods=["GET", "POST"],
     )
+    @router.api_route(
+        "/t4/fm/{source_id}/{plugin_id}/{access_key}/",
+        methods=["GET", "POST"],
+    )
+    @router.api_route(
+        "/t4/fm/{source_id}/{plugin_id}/",
+        methods=["GET", "POST"],
+    )
     async def fm_module(
         source_id: str,
         plugin_id: str,
-        module: str,
         request: Request,
         access_key: str | None = None,
         gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
@@ -63,11 +70,20 @@ def build_fm_router(
 
         params = dict(request.query_params)
         if request.method == "POST":
-            try:
-                body = await request.json()
-            except ValueError:
-                body = {}
-            if isinstance(body, dict):
+            content_type = request.headers.get("content-type", "").split(";", 1)[0]
+            if content_type in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+                params.update(dict(await request.form()))
+            elif await request.body():
+                try:
+                    body = await request.json()
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400, detail={"message": "POST body must be JSON or form data"}
+                    ) from exc
+                if not isinstance(body, dict):
+                    raise HTTPException(
+                        status_code=400, detail={"message": "POST body must be an object"}
+                    )
                 params.update(body)
         params.pop("t4_token", None)
         client_name = request.headers.get("X-CLIENT")
@@ -75,6 +91,9 @@ def build_fm_router(
             params["client"] = client_name
 
         try:
+            module = request.path_params.get("module")
+            if module is None:
+                module, params = translate_fm_request(params)
             return await adapter.dispatch(
                 T4Request(
                     module=module,

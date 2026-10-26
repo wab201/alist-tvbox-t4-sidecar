@@ -49,9 +49,10 @@ class AtvpRuntime:
 
         with self._quiet_stdout():
             result = self._spider.init(extend)
+            name = self._spider.getName()
         return {
             "result": self._json_value(result),
-            "name": self._json_value(self._spider.getName()),
+            "name": self._json_value(name),
         }
 
     def home(self, filter_value: bool = True) -> Any:
@@ -246,7 +247,9 @@ class AtvpRuntime:
             raise AtvpRuntimeError("Atvp loader could not be imported")
         module = importlib.util.module_from_spec(spec)
         try:
-            spec.loader.exec_module(module)
+            # Refresh must read current bytes, even for same-size edits in one second.
+            with self._quiet_stdout():
+                exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         except Exception as exc:
             raise AtvpRuntimeError(
                 f"Atvp loader import failed: {type(exc).__name__}"

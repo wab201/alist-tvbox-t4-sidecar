@@ -154,6 +154,26 @@ def test_t4_adapter_wraps_detail_and_play_ids() -> None:
     assert worker.calls[2][2]["id"] == "raw-play-id"
 
 
+def test_adapter_does_not_invent_play_ids_for_empty_episode_entries() -> None:
+    class EmptyEpisodeWorker(FakeWorker):
+        def call(self, runtime_key, plugin, method, params):
+            return {"list": [{
+                "vod_id": "movie",
+                "vod_play_from": "Demo",
+                "vod_play_url": "$#Placeholder$#Play$actual",
+            }]}
+
+    adapter = T4Adapter(
+        SourceRegistry((source(),)), EmptyEpisodeWorker(), subscription_fetcher=fetcher
+    )
+    detail = asyncio.run(
+        adapter.dispatch(T4Request("detail", "source-a", "demo", {"ids": "movie"}))
+    )
+    episodes = detail["list"][0]["vod_play_url"].split("#")
+    assert episodes[:2] == ["$", "Placeholder$"]
+    assert episodes[2].startswith("Play$t4_")
+
+
 def test_t4_route_supports_get_and_post() -> None:
     worker = FakeWorker()
     adapter = T4Adapter(

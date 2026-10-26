@@ -29,3 +29,7 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["sidecar*"]
+
+[tool.setuptools.package-data]
+"sidecar.web" = ["index.html", "assets/icons/*.svg", "assets/icons/LICENSE"]
+"sidecar.worker" = ["vendor/*.py", "vendor/*.mjs", "vendor/README.md"]

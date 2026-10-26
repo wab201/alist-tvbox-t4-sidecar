@@ -105,6 +105,9 @@ class SourceRegistry:
     def public_metadata(self) -> list[dict[str, Any]]:
         return [source.public_metadata() for source in self._sources]
 
+    def all(self) -> tuple[SourceConfig, ...]:
+        return self._sources
+
     def get(self, source_id: str) -> SourceConfig | None:
         return next(
             (source for source in self._sources if source.source_id == source_id),
