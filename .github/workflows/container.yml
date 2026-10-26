@@ -59,7 +59,8 @@ jobs:
           docker save "$tag" | gzip -1 > /tmp/t4-image/t4-sidecar.tar.gz
           cd /tmp/t4-image
           sha256sum t4-sidecar.tar.gz > SHA256SUMS
-          docker image inspect "$tag" --format '{{json .Id}}' > image-id.json
+          python3 "$GITHUB_WORKSPACE/scripts/image_archive_identity.py" \
+            t4-sidecar.tar.gz --revision "$GITHUB_SHA" --tag "$tag" > image-id.json
 
       - name: Upload NAS deployment archive
         uses: actions/upload-artifact@v4
