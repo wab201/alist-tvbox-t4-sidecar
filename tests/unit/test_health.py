@@ -22,7 +22,6 @@ def test_health_returns_stable_public_status() -> None:
         "service": "test-sidecar",
         "status": "ok",
         "version": "test-version",
-        "auth_required": False,
         "worker": {"status": "not_started"},
     }
 

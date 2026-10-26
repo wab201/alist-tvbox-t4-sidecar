@@ -1,35 +1,24 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from sidecar.at.native import NativeAtUnsupportedError
 from sidecar.at.subscription import SubscriptionParseError
-from sidecar.gateway.auth import gateway_token_matches
-from sidecar.gateway.config import Settings
-from sidecar.gateway.fm import fm_access_key_matches, translate_fm_request
+from sidecar.gateway.fm import translate_fm_request
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
 
 
 def build_fm_router(
-    settings: Settings,
     source_registry: SourceRegistry,
     adapter: T4Adapter,
 ) -> APIRouter:
     router = APIRouter()
 
     @router.api_route(
-        "/t4/fm/{source_id}/{plugin_id}/{access_key}/api/{module}",
-        methods=["GET", "POST"],
-    )
-    @router.api_route(
         "/t4/fm/{source_id}/{plugin_id}/api/{module}",
-        methods=["GET", "POST"],
-    )
-    @router.api_route(
-        "/t4/fm/{source_id}/{plugin_id}/{access_key}/",
         methods=["GET", "POST"],
     )
     @router.api_route(
@@ -40,28 +29,7 @@ def build_fm_router(
         source_id: str,
         plugin_id: str,
         request: Request,
-        access_key: str | None = None,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, Any]:
-        if settings.gateway_token:
-            key_is_valid = access_key is not None and fm_access_key_matches(
-                settings.gateway_token,
-                source_id,
-                plugin_id,
-                access_key,
-            )
-            if not key_is_valid and not gateway_token_matches(
-                settings.gateway_token,
-                gateway_token,
-            ):
-                raise HTTPException(
-                    status_code=401,
-                    detail={
-                        "code": "unauthorized",
-                        "message": "FM compatibility address is invalid",
-                    },
-                )
-
         if source_registry.get(source_id) is None:
             raise HTTPException(
                 status_code=404,
@@ -85,7 +53,6 @@ def build_fm_router(
                         status_code=400, detail={"message": "POST body must be an object"}
                     )
                 params.update(body)
-        params.pop("t4_token", None)
         client_name = request.headers.get("X-CLIENT")
         if client_name and "client" not in params:
             params["client"] = client_name

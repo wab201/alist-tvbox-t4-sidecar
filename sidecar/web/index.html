@@ -81,12 +81,6 @@
     <span id="health" class="badge">连接中</span>
   </header>
   <div id="status" class="status muted" role="status" aria-live="polite">正在加载</div>
-  <section id="auth-panel" hidden>
-    <div class="controls">
-      <label>Gateway Token<input id="token" type="password" autocomplete="off"></label>
-      <div class="toolbar"><button id="save" class="primary">加载</button><button id="clear">清除</button></div>
-    </div>
-  </section>
   <section aria-labelledby="subscription-heading">
     <div class="section-head">
       <h2 id="subscription-heading">影视订阅</h2>
@@ -136,28 +130,21 @@
 </dialog>
 <script>
   const $ = (selector) => document.querySelector(selector);
-  const tokenInput = $("#token");
   const pluginsNode = $("#plugins");
   const sourcesNode = $("#sources");
   const dialog = $("#manage-dialog");
-  const savedToken = sessionStorage.getItem("t4_token") || "";
-  let authRequired = false;
   let plugins = [];
   let busy = false;
   let dialogOperation = null;
   let subscriptionUrl = "";
   const selectedSites = new Map();
-  tokenInput.value = savedToken;
 
   function setStatus(text, kind = "muted") {
     $("#status").textContent = text;
     $("#status").className = `status ${kind}`;
   }
-  function headers() {
-    return authRequired && tokenInput.value ? {"X-T4-Token": tokenInput.value} : {};
-  }
   async function request(path, options = {}) {
-    const response = await fetch(path, {...options, headers: {...headers(), ...(options.headers || {})}});
+    const response = await fetch(path, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload?.detail?.message || (response.status === 422 ? "提交的数据格式不正确" : `HTTP ${response.status}`));
     return payload;
@@ -407,7 +394,6 @@
     finally { $("#refresh").disabled = false; }
   };
   async function loadAll() {
-    sessionStorage.setItem("t4_token", tokenInput.value);
     try {
       await loadSubscriptionLink();
       await loadPlugins();
@@ -415,32 +401,13 @@
       setStatus(`已加载 ${plugins.length} 个本地插件`, "ok");
     } catch (error) { setStatus(error.message, "error"); }
   }
-  $("#save").onclick = loadAll;
-  $("#clear").onclick = () => {
-    tokenInput.value = "";
-    sessionStorage.removeItem("t4_token");
-    subscriptionUrl = "";
-    $("#subscription-url").textContent = "未加载";
-    $("#copy-subscription").disabled = true;
-    plugins = [];
-    renderPlugins();
-    sourcesNode.replaceChildren();
-    setStatus("已清除");
-  };
   $("#entry-url").textContent = `${location.origin}/t4/`;
   $("#health-url").textContent = `${location.origin}/t4/health`;
-  // T4_GATEWAY_TOKEN is optional; no extra authentication in local mode.
   (async () => {
     try {
       const health = await request("/t4/health");
-      authRequired = Boolean(health.auth_required);
-      $("#auth-panel").hidden = !authRequired;
       $("#health").textContent = `${health.status} · ${health.version}`;
-      if (!authRequired || savedToken) await loadAll();
-      else {
-        $("#subscription-url").textContent = "未加载";
-        setStatus("保护模式：请输入 Gateway Token 后加载");
-      }
+      await loadAll();
     } catch (error) { $("#health").textContent = "不可用"; setStatus(error.message, "error"); }
   })();
 </script>

@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from sidecar.at.subscription import SubscriptionParseError
 from sidecar.at.native import NativeAtUnsupportedError
-from sidecar.gateway.auth import gateway_token_matches
-from sidecar.gateway.config import Settings
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
 
 
 def build_t4_router(
-    settings: Settings,
     source_registry: SourceRegistry,
     adapter: T4Adapter,
 ) -> APIRouter:
@@ -26,15 +23,7 @@ def build_t4_router(
     async def t4_module(
         module: str,
         request: Request,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, Any]:
-        if not gateway_token_matches(settings.gateway_token, gateway_token):
-            gateway_token = request.query_params.get("t4_token")
-        if not gateway_token_matches(settings.gateway_token, gateway_token):
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "unauthorized", "message": "gateway token required"},
-            )
         params = dict(request.query_params)
         if request.method == "POST":
             try:
@@ -43,7 +32,6 @@ def build_t4_router(
                 body = {}
             if isinstance(body, dict):
                 params.update(body)
-        params.pop("t4_token", None)
         client_name = request.headers.get("X-CLIENT")
         if client_name and "client" not in params:
             params["client"] = client_name

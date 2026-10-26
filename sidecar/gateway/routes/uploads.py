@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
-
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict
 
 from sidecar.at.subscription import PluginDescriptor
-from sidecar.gateway.auth import gateway_token_matches
 from sidecar.gateway.config import Settings
 from sidecar.gateway.fm import build_fm_path
 from sidecar.gateway.source_registry import SourceRegistry
@@ -33,17 +30,9 @@ def build_uploads_router(
 ) -> APIRouter:
     router = APIRouter()
 
-    def authorize(token: str | None) -> None:
-        if not gateway_token_matches(settings.gateway_token, token):
-            raise HTTPException(
-                status_code=401,
-                detail={"code": "unauthorized", "message": "gateway token required"},
-            )
-
     def metadata(plugin: PluginDescriptor) -> dict[str, object]:
         result = plugin.public_metadata()
         result["fm_path"] = build_fm_path(
-            settings.gateway_token,
             plugin_store.source_config.source_id,
             plugin.plugin_id,
         )
@@ -62,19 +51,14 @@ def build_uploads_router(
         )
 
     @router.get("/t4/api/plugins")
-    async def list_plugins(
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
-    ) -> dict[str, object]:
-        authorize(gateway_token)
+    async def list_plugins() -> dict[str, object]:
         snapshot = plugin_store.snapshot_for(plugin_store.source_config.source_id)
         return {"plugins": [metadata(plugin) for plugin in snapshot.plugins]}
 
     @router.post("/t4/api/plugins/reorder")
     async def reorder_plugins(
         body: ReorderPlugins,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        authorize(gateway_token)
         try:
             await asyncio.to_thread(plugin_store.reorder, body.plugin_ids)
         except PluginUploadError as exc:
@@ -84,9 +68,7 @@ def build_uploads_router(
     @router.post("/t4/api/plugins/upload")
     async def upload_plugin(
         file: UploadFile = File(...),
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        authorize(gateway_token)
         try:
             content = await file.read(settings.upload_max_bytes + 1)
             plugin = await asyncio.to_thread(plugin_store.register, file.filename, content)
@@ -102,9 +84,7 @@ def build_uploads_router(
     async def rename_plugin(
         plugin_id: str,
         body: RenamePlugin,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        authorize(gateway_token)
         try:
             plugin = await asyncio.to_thread(plugin_store.rename, plugin_id, body.name)
         except KeyError as exc:
@@ -116,9 +96,7 @@ def build_uploads_router(
     @router.post("/t4/api/plugins/{plugin_id}/refresh")
     async def refresh_plugin(
         plugin_id: str,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        authorize(gateway_token)
         source_id = plugin_store.source_config.source_id
         async with adapter.plugin_lock(source_id, plugin_id):
             try:
@@ -133,9 +111,7 @@ def build_uploads_router(
     @router.delete("/t4/api/plugins/{plugin_id}")
     async def delete_plugin(
         plugin_id: str,
-        gateway_token: Annotated[str | None, Header(alias="X-T4-Token")] = None,
     ) -> dict[str, object]:
-        authorize(gateway_token)
         source_id = plugin_store.source_config.source_id
         async with adapter.plugin_lock(source_id, plugin_id):
             if not await asyncio.to_thread(plugin_store.remove, plugin_id):

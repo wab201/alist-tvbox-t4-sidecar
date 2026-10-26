@@ -21,9 +21,8 @@ def upload(client, filename="demo.py", content=PYTHON_PLUGIN):
 
 
 def test_manage_plugins_persists_names_order_and_fm_addresses(tmp_path):
-    settings = Settings(plugin_dir=str(tmp_path), gateway_token="test")
+    settings = Settings(plugin_dir=str(tmp_path))
     with TestClient(create_app(settings, SourceRegistry())) as client:
-        client.headers["X-T4-Token"] = "test"
         first = upload(client)
         second = upload(client, "demo.js", JAVASCRIPT_PLUGIN)
         renamed = client.patch(
@@ -44,7 +43,6 @@ def test_manage_plugins_persists_names_order_and_fm_addresses(tmp_path):
         assert len(client.get("/t4/api/plugins").json()["plugins"]) == 2
 
     with TestClient(create_app(settings, SourceRegistry())) as restarted:
-        restarted.headers["X-T4-Token"] = "test"
         restored = restarted.get("/t4/api/plugins").json()["plugins"]
         assert [item["id"] for item in restored] == ids
         assert restored[1]["name"] == "我的 Python 插件"
@@ -141,20 +139,21 @@ def test_refresh_checks_current_file_and_reloads_updated_code(tmp_path):
         assert client.post(f"/t4/api/plugins/{plugin['id']}/refresh").status_code == 400
 
 
-def test_management_endpoints_respect_optional_protected_mode(tmp_path):
-    settings = Settings(plugin_dir=str(tmp_path), gateway_token="test")
+def test_management_endpoints_need_no_extra_credentials_with_legacy_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_GATEWAY_TOKEN", "obsolete-gateway")
+    monkeypatch.setenv("T4_PLUGIN_DIR", str(tmp_path))
+    settings = Settings.from_env()
     with TestClient(create_app(settings, SourceRegistry())) as client:
+        plugin = upload(client)
         for method, url, body in [
             ("GET", "/t4/api/plugins", None),
-            ("POST", "/t4/api/plugins/reorder", {"plugin_ids": []}),
-            ("PATCH", "/t4/api/plugins/unknown", {"name": "Name"}),
-            ("POST", "/t4/api/plugins/unknown/refresh", None),
-            ("DELETE", "/t4/api/plugins/unknown", None),
+            ("POST", "/t4/api/plugins/reorder", {"plugin_ids": [plugin["id"]]}),
+            ("PATCH", f"/t4/api/plugins/{plugin['id']}", {"name": "Name"}),
+            ("POST", f"/t4/api/plugins/{plugin['id']}/refresh", None),
+            ("DELETE", f"/t4/api/plugins/{plugin['id']}", None),
         ]:
-            assert client.request(method, url, json=body).status_code == 401
-        assert client.post(
-            "/t4/api/plugins/upload", files={"file": ("demo.py", PYTHON_PLUGIN)}
-        ).status_code == 401
+            assert client.request(method, url, json=body).status_code == 200
+        assert client.get("/t4/api/plugins").json() == {"plugins": []}
 
 
 def test_concurrent_store_uploads_do_not_lose_manifest_entries(tmp_path):

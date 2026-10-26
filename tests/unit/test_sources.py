@@ -8,7 +8,7 @@ from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 
 
 def make_client() -> TestClient:
-    settings = Settings(gateway_token="gateway-test-token")
+    settings = Settings()
     registry = SourceRegistry(
         (
             SourceConfig(
@@ -22,22 +22,10 @@ def make_client() -> TestClient:
     return TestClient(create_app(settings, registry))
 
 
-def test_source_list_requires_gateway_token() -> None:
-    client = make_client()
-
-    response = client.get("/t4/api/sources")
-
-    assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "unauthorized"
-
-
 def test_source_list_returns_public_metadata_only() -> None:
     client = make_client()
 
-    response = client.get(
-        "/t4/api/sources",
-        headers={"X-T4-Token": "gateway-test-token"},
-    )
+    response = client.get("/t4/api/sources")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -55,7 +43,7 @@ def test_source_list_returns_public_metadata_only() -> None:
     assert "keyring" not in response.text
 
 
-def test_source_list_is_open_in_local_mode() -> None:
+def test_source_list_is_open_without_extra_credentials() -> None:
     registry = SourceRegistry(
         (
             SourceConfig(

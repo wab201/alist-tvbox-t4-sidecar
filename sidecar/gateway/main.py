@@ -103,10 +103,9 @@ def create_app(
         lifespan=lifespan,
     )
     app.include_router(build_health_router(runtime_settings))
-    app.include_router(build_sources_router(runtime_settings, runtime_sources))
+    app.include_router(build_sources_router(runtime_sources))
     app.include_router(
         build_client_config_router(
-            runtime_settings,
             runtime_sources,
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,
@@ -114,7 +113,6 @@ def create_app(
     )
     app.include_router(
         build_subscriptions_router(
-            runtime_settings,
             runtime_sources,
             subscription_fetcher,
             subscription_resolver=subscription_resolver.resolve,
@@ -125,9 +123,9 @@ def create_app(
     app.include_router(
         build_uploads_router(runtime_settings, runtime_sources, upload_store, runtime_adapter)
     )
-    app.include_router(build_t4_router(runtime_settings, runtime_sources, runtime_adapter))
+    app.include_router(build_t4_router(runtime_sources, runtime_adapter))
     app.include_router(
-        build_fm_router(runtime_settings, runtime_sources, runtime_adapter)
+        build_fm_router(runtime_sources, runtime_adapter)
     )
     app.include_router(build_web_router())
     app.mount(

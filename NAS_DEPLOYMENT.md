@@ -9,8 +9,7 @@
 1. NAS 已安装 Docker 或 Container Manager。
 2. NAS 可以访问 `ghcr.io` 和 AT 服务地址。
 3. 已在 AT 中生成一条可用的完整订阅地址。
-4. 如果需要把服务放到非可信网络，再准备一个 T4 Gateway Token；家庭局域网本地部署可以不配置。
-5. 如果 GHCR 镜像为私有包，准备 GitHub 个人访问令牌，至少具有 `read:packages` 权限。
+4. 如果 GHCR 镜像为私有包，准备 GitHub 个人访问令牌，至少具有 `read:packages` 权限。
 
 Sidecar 不读取 AT 用户名和密码，也不需要把 AT 登录密码写入容器。当前推荐直接使用 AT 生成的完整订阅地址：
 
@@ -19,6 +18,7 @@ ALIST_TVBOX_SUBSCRIPTION_URL=https://你的AT地址/sub/订阅令牌/订阅编�
 ```
 
 订阅地址中可能包含授权信息，必须视为密码处理。
+Sidecar 不额外设置令牌或登录界面。AT 原有授权仍由上述订阅地址及其生成的插件配置提供。
 
 ## 二、创建目录和配置
 
@@ -41,12 +41,11 @@ chmod 600 .env
 如果 NAS 未安装 Git，直接通过文件管理器上传这两个文件即可，不需要把 GitHub
 Token 写入克隆地址。当前仓库为私有仓库，匿名 `curl` 下载 GitHub Raw 文件不可用。
 
-编辑 `.env`，至少填写 AT 订阅地址；本地部署无需填写 Gateway Token：
+编辑 `.env`，至少填写 AT 订阅地址：
 
 ```dotenv
 T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:latest
 T4_PORT=8765
-T4_GATEWAY_TOKEN=
 T4_SOURCES_FILE=/app/config/sources.json
 ALIST_TVBOX_SUBSCRIPTION_URL=请替换为AT完整订阅地址
 T4_WORKER_TIMEOUT=15
@@ -55,12 +54,6 @@ T4_PLUGIN_DIR=/data/plugins
 T4_UPLOAD_MAX_BYTES=2000000
 T4_SERVICE_NAME=t4-sidecar
 T4_VERSION=0.1.0
-```
-
-如需启用保护模式，再生成 Gateway Token：
-
-```bash
-openssl rand -hex 32
 ```
 
 不要把真实 `.env` 上传到 GitHub、截图、工单或公开日志。
@@ -135,7 +128,7 @@ http://NAS_IP:8766/t4/
 http://NAS_IP:8765/t4/health
 ```
 
-健康检查不需要 Gateway Token。页面打不开时，先在 NAS 上执行：
+页面和健康检查均无需额外令牌。页面打不开时，先在 NAS 上执行：
 
 ```bash
 curl -fsS http://127.0.0.1:8765/t4/health
@@ -143,7 +136,7 @@ curl -fsS http://127.0.0.1:8765/t4/health
 
 ### 页面操作
 
-1. 打开页面，Sidecar 会自动读取容器中的 source 和 AT 订阅配置；本地模式不需要填写 Token。
+1. 打开页面，Sidecar 会自动读取容器中的 source 和 AT 订阅配置，不需要填写额外 Token。
 2. AT 订阅插件列表会自动读取；需要立即同步 AT 变更时点击“重新读取 AT 订阅”。
 3. 点击顶部的“复制影视订阅地址”，在 FM 影视点播配置中导入；无需逐个选择插件或填写 `site`。
 4. 需要诊断时，在 AT 订阅下选择插件，点击“首页冒烟”测试首页。
@@ -169,18 +162,15 @@ Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 
 
 页面会标注不能转成标准 T4 的本地能力或页面入口，例如 `csp_Push`、`csp_WebHome`。这类条目不会被当作可播放的标准 VOD 插件。
 
-### 页面安全规则
+### 访问范围
 
-- 本地模式不需要 Gateway Token，顶部复制的影视订阅可直接导入。
-- 如果启用了保护模式，Token 仅临时保存在当前浏览器标签页的 `sessionStorage`。
-- 不要把 Token 粘贴到公开工单、截图、浏览器书签或公网 URL。
-- 生产环境优先使用支持自定义请求头的 T4 客户端，或把服务放在 HTTPS、VPN 和访问控制之后。
+顶部复制的影视订阅可直接导入，不需要额外令牌或认证请求头。
+管理面可以上传和执行插件，应仅供可信的家庭网络使用；远程访问复用现有 VPN 或反向代理。
 
 ### 页面常见错误
 
 | 状态 | 含义 | 处理 |
 | --- | --- | --- |
-| `401` | 保护模式 Token 缺失或错误 | 关闭 `T4_GATEWAY_TOKEN`，或在页面显示的保护模式输入框填入正确令牌 |
 | `400` | 缺少 `source` 或多插件订阅缺少 `site` | 先确认 source ID，再选择具体插件 |
 | `501` | 插件只有 AT 客户端本地能力，没有 AT 服务端 T4 路由 | 改用支持标准 T4 的插件 |
 | `502` | AT 订阅、插件 loader 或上游站点失败 | 检查 AT 地址、订阅有效期和容器日志 |
@@ -188,32 +178,23 @@ Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 
 
 ## 六、在 T4 客户端中使用
 
-FM 影视优先导入管理台顶部复制的完整点播订阅。本地模式地址为：
+FM 影视优先导入管理台顶部复制的完整点播订阅。地址固定为：
 
 ```text
 http://NAS_IP:8765/t4/config.json
 ```
 
-保护模式请复制页面自动生成的订阅地址，影视无需额外配置请求头。
+影视无需额外配置令牌或认证请求头。
 下面的显式模块接口仅供开发调试，不应作为完整点播订阅导入。
 
-直接调试模块 API 且启用了保护模式时，通过请求头传递 Gateway Token：
-
-```http
-X-T4-Token: 你的T4_GATEWAY_TOKEN
-```
-
-本地模式无需令牌。保护模式下，不能设置请求头的客户端可以使用查询参数，但查询参数可能进入浏览器历史、
-反向代理日志和访问日志：
+直接调试模块 API：
 
 ```text
-http://NAS_IP:8765/t4/api/home?source=env-at&site=csp_BiliBili&t4_token=你的T4_GATEWAY_TOKEN
+http://NAS_IP:8765/t4/api/home?source=env-at&site=csp_BiliBili
 ```
 
 当一个 AT 订阅包含多个插件时，必须带上 `site` 参数；`csp_BiliBili`、`csp_Media`
 等值来自订阅中的插件 `key`。
-
-因此，生产环境优先使用支持自定义请求头的客户端或在可信的内网反向代理后使用。
 
 ## 七、升级和固定版本
 
@@ -320,13 +301,11 @@ printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username 你的GitHub用户�
 unset GHCR_TOKEN
 ```
 
-### `/t4/health` 正常，但 API 返回 `401`
+### 升级后仍显示旧的 Token 输入框或 `gateway token required`
 
-说明服务已启动且启用了保护模式，但请求没有携带正确的 `T4_GATEWAY_TOKEN`。检查客户端请求头：
-
-```http
-X-T4-Token: 你的T4_GATEWAY_TOKEN
-```
+当前版本已删除 Sidecar 额外鉴权，旧环境变量也不会重新启用它。
+核对容器是否已使用新镜像，并强制刷新浏览器页面。旧版带签名路径的订阅或插件地址不再使用，
+从页面重新复制固定的 `/t4/config.json` 即可。AT 订阅过期或无效仍需在原版 AT 中处理。
 
 ### API 返回 `source is required`
 
@@ -343,8 +322,8 @@ env-at
 3. 在 FM 影视的“设置 → 配置 → 点播”中粘贴保存；菜单名称随版本可能略有不同。
 4. 在影视的站点列表选择 Bilibili、我的追更或上传的插件。
 
-默认本地模式统一订阅为 `http://NAS_IP:8765/t4/config.json`，自动包含所有可执行插件，
-不需要逐个复制 API、编写 JSON 或配置 `source`、`site`、`X-T4-Token`。
+统一订阅为 `http://NAS_IP:8765/t4/config.json`，自动包含所有可执行插件，
+不需要逐个复制 API、编写 JSON 或配置 `source`、`site` 和认证请求头。
 电视不能使用电脑的 `127.0.0.1` 或 `localhost`。页面通过局域网 IP 打开后，订阅中的站点 API
 会使用对应主机地址；反向代理应保留外部 Host，HTTPS 代理还需正确传递并信任转发协议。
 新增、删除、排序或改名插件后，在影视中刷新配置即可同步；站点 key 与名称和顺序无关。
@@ -353,9 +332,7 @@ env-at
 逐插件“复制插件 API”生成的是站点 `api` 地址，不是完整点播订阅。该地址接收 `t`、`ids`、
 `wd`、`play` 等标准参数，并支持 URL-safe Base64 分类筛选及 GET、JSON POST、表单 POST。
 
-本地模式下 FM 地址是绑定插件的便捷入口；保护模式下 FM 地址同时属于访问凭证。建议只在家庭网络、VPN 或 HTTPS
-反向代理中使用，不要发布到公网、截图或公共配置仓库。修改 `T4_GATEWAY_TOKEN` 后，保护模式旧 FM 地址会失效，
-需要重新从 Web 页面复制。
+FM 地址只负责绑定插件，不携带 Sidecar 访问钥匙或 AT 订阅令牌。请使用电视可访问的 NAS 局域网地址。
 
 ### API 返回订阅不可用或 `502`
 
@@ -392,6 +369,5 @@ docker compose images
 
 - 不把 AT 账号密码、完整订阅地址、Cookie、插件 secret、keyring 提交到 Git。
 - 不把 GHCR PAT 写入 `.env`、Compose 文件或镜像构建参数。
-- 不把 Gateway Token 放到公开截图和公开 URL 中。
 - 不把 `8765` 暴露到公网；需要公网访问时，先放在 HTTPS 反向代理、访问控制或 VPN 后面。
 - T4 返回的详情和播放 ID 是 Sidecar 的 opaque ID，不应被当成永久链接保存。

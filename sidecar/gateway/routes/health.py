@@ -14,7 +14,6 @@ def build_health_router(settings: Settings) -> APIRouter:
             "service": settings.service_name,
             "status": "ok",
             "version": settings.version,
-            "auth_required": bool(settings.gateway_token),
             "worker": {"status": settings.worker_status},
         }
 

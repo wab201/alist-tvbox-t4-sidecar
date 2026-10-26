@@ -1,6 +1,6 @@
 # AList-TVBox 订阅转 T4 Sidecar 项目计划
 
-> 版本：v0.2
+> 版本：v0.3（2026-10-26 取消 Sidecar 额外鉴权）
 > 基线日期：2026-10-22
 > 计划状态：独立附属容器方案
 > 分析基线：`power721/alist-tvbox` master，已核验提交 `e0210e5ccc83a1a05f0fd3c5a636c44e8f080370`
@@ -34,7 +34,7 @@ AT 的订阅接口主要负责输出订阅配置、插件入口、`ext` 和插�
 
 - 只转发 `/sub`、`/vod`、`/play`，只能复用 AT 原生网盘能力，不能执行任意 Python 插件。
 - 要支持官方加密插件和自定义插件，Sidecar 必须提供与 `Atvp.py` 兼容的 Worker。
-- Worker 负责插件初始化和方法调用，Sidecar Gateway 只负责 T4 协议、授权、隔离和结果转换。
+- Worker 负责插件初始化和方法调用，Sidecar Gateway 只负责 T4 协议、隔离和结果转换；上游授权复用 AT 配置。
 - AT 不需要增加新的服务端插件执行 API，避免把任意 Python 执行能力直接暴露到 AT 主进程。
 
 ### 1.2 非侵入式定义
@@ -74,7 +74,7 @@ AT 的订阅接口主要负责输出订阅配置、插件入口、`ext` 和插�
 - AT 过滤器的只读处理链。
 - T4 首页、分类、搜索、详情、播放。
 - GET、POST 双方式。
-- Sidecar Gateway token。
+- 不增加 Sidecar 令牌，复用 AT 订阅和上游接口原有授权。
 - `/t4/` 管理入口。
 - 插件能力检测、超时、进程隔离、日志脱敏和错误码。
 - 脱敏 fixture、单元测试、Worker 测试和一次授权真实回归。
@@ -85,7 +85,7 @@ AT 页面中的独立 T4 入口只实现以下功能：
 
 1. 添加或选择一个服务端保存的 AT 订阅。
 2. 显示订阅中的插件、插件类型和能力状态。
-3. 显示 T4 地址和 Gateway token 状态。
+3. 显示可直接复制的统一订阅和插件 T4 地址。
 4. 一键执行首页、搜索、详情、播放冒烟测试。
 5. 复制 T4 配置地址。
 6. 显示明确错误，例如 `unsupported_plugin`、`worker_timeout`、`decrypt_failed`。
@@ -140,7 +140,7 @@ Sidecar 只读该文件，不提供下载、导出或 Web 展示接口。若动�
 
 ```text
 t4-sidecar
-├── gateway      # T4 HTTP、管理 API、鉴权、限流
+├── gateway      # T4 HTTP、管理 API、结果转换
 ├── resolver     # AT 订阅和插件描述解析
 └── worker       # 独立子进程或受限进程池，执行 Atvp.py/Spider
 ```
@@ -177,7 +177,6 @@ Sidecar Admin API
 
 ```text
 T4 /api/{module}
-  -> Gateway token 校验
   -> source 白名单校验
   -> Worker job
   -> Atvp.init(ext)
@@ -532,7 +531,7 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 
 ### 10.3 安全验收
 
-- Gateway token、AT token、Cookie、secret、keyring 不进入客户端响应和普通日志。
+- AT token、Cookie、secret、keyring 不进入客户端响应和普通日志。
 - 管理 API 与公共 T4 API 分离。
 - Worker 不运行在 Gateway 主进程内。
 - Worker 无法写入 AT 数据目录。

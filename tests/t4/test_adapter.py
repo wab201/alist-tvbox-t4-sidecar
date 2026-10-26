@@ -183,7 +183,7 @@ def test_t4_route_supports_get_and_post() -> None:
     )
     client = TestClient(
         create_app(
-            Settings(gateway_token="gateway-token"),
+            Settings(),
             SourceRegistry((source(),)),
             subscription_fetcher=fetcher,
             t4_adapter=adapter,
@@ -193,21 +193,14 @@ def test_t4_route_supports_get_and_post() -> None:
     get_response = client.get(
         "/t4/api/home",
         params={"source": "source-a"},
-        headers={"X-T4-Token": "gateway-token"},
     )
     post_response = client.post(
         "/t4/api/home",
         json={"source": "source-a"},
-        headers={"X-T4-Token": "gateway-token"},
-    )
-    query_response = client.get(
-        "/t4/api/home",
-        params={"source": "source-a", "t4_token": "gateway-token"},
     )
 
     assert get_response.status_code == 200
     assert post_response.status_code == 200
-    assert query_response.status_code == 200
     assert get_response.json()["list"][0]["vod_id"].startswith("t4_")
     assert post_response.json()["list"][0]["vod_id"].startswith("t4_")
 

@@ -15,7 +15,7 @@
 |---|---|---|---|
 | M0 | 方案、边界、样本和证据台账冻结 | 通过 | 计划与节点台账一致，核心约束可追溯 |
 | M1 | Sidecar 可运行骨架和健康检查 | 通过 | `/t4/health` 返回稳定 JSON，单元测试通过 |
-| M2 | 配置、可选 Gateway token 和 source registry | 通过 | 本地模式免额外令牌；保护模式拒绝无 token 请求，source 列表脱敏 |
+| M2 | 配置和 source registry | 通过 | source 列表脱敏；额外鉴权已由 M12 删除 |
 | M3 | AT 订阅读取、ext 解码和能力快照 | 通过 | 脱敏 fixture 可解析，敏感字段不出日志 |
 | M4 | 独立 Atvp Worker 和会话隔离 | 通过 | worker 可独立启动、超时可回收、source 会话亲和 |
 | M5 | 官方 secspider、自定义 raw、动态 loader 和 keyring 回退 | 通过 | 三类插件通过 ATVP/FongMi 兼容门禁 |
@@ -25,6 +25,7 @@
 | M9 | AT 内置源原生桥接 | 通过 | 已完成服务端内置源的原生路由、参数和播放桥接；客户端本地/页面型源单独标记边界 |
 | M10 | 本地插件完整管理与可用性仿真 | 通过 | Python/JS 上传、删除、排序、重命名、刷新；浏览器操作及持久化与方法链回归 |
 | M11 | 统一影视订阅及 FM type=4 请求合同 | 进行中 | 服务端、Web 和真实 AT 抽样已通过；Android/TV 实机导入与播放待验收 |
+| M12 | 删除 Sidecar 额外鉴权 | 通过 | 删除令牌配置、校验、签名路由和 Web 输入；131 项回归通过，AT 上游授权保留 |
 
 ## M0 方案和证据台账
 
@@ -107,7 +108,9 @@ python -m uvicorn sidecar.gateway.main:app --host 127.0.0.1 --port 8765
 
 - 首次测试发现 `slots=True` 数据类通过 `cls.field` 读取默认值会产生 `member_descriptor`；已改为显式环境变量默认值并复验通过。
 
-## M2 配置、token 和 source registry
+## M2 配置和 source registry
+
+以下鉴权相关实现和验收是早期历史记录；2026-10-26 起由 M12 删除，不再是当前配置要求。
 
 **输入**
 
@@ -123,7 +126,7 @@ python -m uvicorn sidecar.gateway.main:app --host 127.0.0.1 --port 8765
 
 **实现**
 
-- Gateway token 校验。
+- 早期包含 Gateway token 校验（已删除）。
 - source 配置加载和稳定 ID。
 - source 列表只输出显示名、能力和状态。
 - token 日志和错误信息脱敏。
@@ -493,7 +496,7 @@ python -m pip wheel . --no-deps --wheel-dir tests/reports/wheels
 - 各站点 `type=4`，`api` 为可直接接收标准参数的绑定插件地址；站点 key 与名称和排序无关。
 - 原订阅的搜索、快速搜索、筛选、分类等客户端选项按白名单保留，不下发原始 ext 或 AT 凭证。
 - 支持 GET、JSON POST、表单 POST；将客户端筛选 `ext` 解码后交给现有适配层。
-- 默认无新增鉴权要求；已启用保护模式的实例自动派生整包订阅和插件级访问钥匙。
+- 本节点早期支持可选保护模式及派生访问钥匙；M12 已统一删除，当前使用固定直连地址。
 - 复用订阅缓存和本地管理快照，生成配置时不初始化插件；AT source 失败明确返回 `502`。
 
 **合同来源**
@@ -518,7 +521,7 @@ git diff --check
 
 - 全量自动化：`126 passed, 1 warning in 28.65s`；警告为现有 TestClient/httpx 弃用提示。
 - 管理台内联脚本通过 HTMLParser 提取并交给 `node --check -`，避免仅依赖页面字符串断言。
-- 统一订阅覆盖跨 source 重名隔离、稳定 key、白名单选项、敏感字段隔离、保护模式、
+- 统一订阅覆盖跨 source 重名隔离、稳定 key、白名单选项、敏感字段隔离、当时的可选保护模式、
   本地插件增删改序及强制刷新 AT 后配置同步；生成配置不执行插件初始化。
 - 上传 PY/JS 后直接读取 `sites[].api`，按 GET、JSON POST、表单 POST 三种方式完成
   首页、分类、搜索、详情、播放、action 合同；真实媒体播放不以 `.invalid` 夹具替代。
@@ -541,3 +544,29 @@ git diff --check
 - Android/TV 真正导入、遥控选源、媒体长播、切集、客户端动作、跨重启收藏/历史恢复仍需实机证据。
 - 现有详情/播放 opaque 映射为进程内状态；站点 key 稳定不代表播放 ID 跨服务重启稳定。
 - 原插件的局部代理、页面入口与客户端专有能力不因统一导出就自动获得完整 T4 语义。
+
+## M12 删除 Sidecar 额外鉴权
+
+**实现（2026-10-26）**
+
+- 彻底删除 Gateway Token 配置、校验模块、认证请求头参数及签名订阅/插件路由，不保留可选开关。
+- 统一订阅固定为 `/t4/config.json`，插件地址固定为 `/t4/fm/{source}/{plugin}/`。
+- Web 无 Token 输入、认证状态分支和会话令牌存储，打开后直接加载订阅与插件。
+- 旧环境变量即使仍有值也不能启用额外鉴权；旧带签名路径的地址返回 `404`，需重新复制固定订阅。
+- 保留 AT 完整订阅及插件配置中的上游授权、加载器校验、输入校验和业务错误处理。
+- NAS 升级仅替换 Sidecar，保留 AT 容器、订阅配置和上传插件数据。
+
+**验证**
+
+```powershell
+python -m pytest -o addopts='' -q
+python -m compileall -q sidecar tests
+git diff --check
+```
+
+- 全量回归 `131 passed`，仅一条已有 TestClient/httpx 弃用警告。
+- 覆盖无额外凭证的统一订阅、source 快照、FM 和模块调用、插件上传/删除/改名/排序/刷新。
+- 带旧环境变量的请求仍成功；AT 订阅令牌正确传至上游，AT 返回 `401` 时不绕过授权或伪造成功。
+- Web 内联脚本通过 `node --check -`，页面不再包含 Token 输入、认证请求头及 `sessionStorage`。
+- 发布与 NAS 真实验收结果单独记录在本地脱敏报告 `tests/reports/release/`，不把凭证提交到仓库。
+- 本节点不改变 M11 的 Android/TV 真机、长播和跨重启历史验收边界。

@@ -19,7 +19,6 @@ class Settings:
     subscription_cache_ttl: float = 30.0
     plugin_dir: str = "/data/plugins"
     upload_max_bytes: int = 2_000_000
-    gateway_token: str | None = None
     source_config_file: str | None = None
     subscription_url: str | None = None
 
@@ -35,7 +34,6 @@ class Settings:
             ),
             plugin_dir=os.getenv("T4_PLUGIN_DIR", "/data/plugins"),
             upload_max_bytes=int(os.getenv("T4_UPLOAD_MAX_BYTES", "2000000")),
-            gateway_token=os.getenv("T4_GATEWAY_TOKEN") or None,
             source_config_file=os.getenv("T4_SOURCES_FILE") or None,
             subscription_url=os.getenv("ALIST_TVBOX_SUBSCRIPTION_URL") or None,
         )

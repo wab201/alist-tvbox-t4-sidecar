@@ -14,9 +14,9 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "/t4/api/sources" in response.text
     assert "http://NAS_IP:8765/t4/" not in response.text
     assert "location.origin}/t4/" in response.text
-    assert "T4_GATEWAY_TOKEN" in response.text
-    assert "X-T4-Token" in response.text
-    assert "auth_required" in response.text
+    assert "T4_GATEWAY_TOKEN" not in response.text
+    assert "X-T4-Token" not in response.text
+    assert "auth_required" not in response.text
     assert "site=" in response.text
     assert "复制插件 API" in response.text
     assert "复制影视订阅地址" in response.text
@@ -27,12 +27,13 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "上传并注册" in response.text
     assert "local-uploaded" in response.text
     assert "&t4_token=" not in response.text
-    assert "sessionStorage" in response.text
+    assert "sessionStorage" not in response.text
     assert "secspider" not in response.text.lower()
     assert "刷新运行实例" in response.text
     assert "重命名" in response.text
     assert "plugin_ids" in response.text
-    assert 'id="status"' in response.text.split('id="auth-panel"')[0]
+    assert 'id="auth-panel"' not in response.text
+    assert 'type="password"' not in response.text
 
 
 def test_web_icons_are_served_locally() -> None:

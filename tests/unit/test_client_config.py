@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from sidecar.at.subscription import SubscriptionParseError
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.gateway.config import Settings
-from sidecar.gateway.fm import build_config_path
 from sidecar.gateway.main import create_app
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.t4.adapter import T4Adapter
@@ -77,31 +76,26 @@ def test_config_is_importable_and_does_not_expose_at_material(tmp_path):
         assert "ext" not in sites[0]
 
 
-def test_protected_subscription_is_copyable_without_raw_gateway_token(tmp_path):
+def test_subscription_has_fixed_address_and_no_signed_routes(tmp_path, monkeypatch):
+    monkeypatch.setenv("T4_GATEWAY_TOKEN", "obsolete-gateway")
+    monkeypatch.setenv("T4_PLUGIN_DIR", str(tmp_path))
     adapter = FakeAdapter()
-    settings = Settings(plugin_dir=str(tmp_path), gateway_token="test-gateway")
     app = create_app(
-        settings, SourceRegistry((source(),)),
+        Settings.from_env(), SourceRegistry((source(),)),
         subscription_fetcher=fetcher, t4_adapter=adapter,
     )
     with TestClient(app) as client:
-        assert client.get("/t4/api/client-config").status_code == 401
-        assert client.get("/t4/config.json").status_code == 401
-        assert client.get("/t4/config/wrong.json").status_code == 401
-        headers = {"X-T4-Token": "test-gateway"}
-        path = client.get("/t4/api/client-config", headers=headers).json()["subscription_path"]
-        assert path == build_config_path("test-gateway")
-        assert "test-gateway" not in path
+        path = client.get("/t4/api/client-config").json()["subscription_path"]
+        assert path == "/t4/config.json"
         response = client.get(path)
         assert response.status_code == 200
-        assert "test-gateway" not in response.text
+        assert "obsolete-gateway" not in response.text
+        assert "private" not in response.text
         site = response.json()["sites"][0]
+        assert site["api"] == "http://testserver/t4/fm/env-at/bili/"
         assert client.get(site["api"]).status_code == 200
-        assert client.get("/t4/fm/env-at/bili/").status_code == 401
-        assert client.get("/t4/config.json", headers=headers).status_code == 200
-        # The all-sites credential must not act as a plugin credential.
-        key = path.rsplit("/", 1)[1].removesuffix(".json")
-        assert client.get(f"/t4/fm/env-at/bili/{key}/").status_code == 401
+        assert client.get("/t4/config/obsolete-key.json").status_code == 404
+        assert client.get("/t4/fm/env-at/bili/obsolete-key/").status_code == 404
 
 
 def test_unavailable_source_is_explicit_and_does_not_leak_subscription(tmp_path):

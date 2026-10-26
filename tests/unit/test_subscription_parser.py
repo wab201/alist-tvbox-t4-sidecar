@@ -417,15 +417,12 @@ def test_subscription_route_returns_redacted_snapshot() -> None:
         subscription_token="token-value",
     )
     app = create_app(
-        Settings(gateway_token="gateway-test-token"),
+        Settings(),
         SourceRegistry((source,)),
         fake_fetcher,
     )
 
-    response = TestClient(app).get(
-        "/t4/api/sources/demo/subscription",
-        headers={"X-T4-Token": "gateway-test-token"},
-    )
+    response = TestClient(app).get("/t4/api/sources/demo/subscription")
 
     assert response.status_code == 200
     assert response.json()["plugins"][0]["type"] == "raw_python"
@@ -437,16 +434,12 @@ def test_subscription_route_returns_redacted_snapshot() -> None:
 
 def test_app_registers_environment_subscription_when_source_file_is_missing() -> None:
     settings = Settings(
-        gateway_token="gateway-test-token",
         source_config_file="missing-sources.json",
         subscription_url=f"{AT_BASE}/sub/token-value/Chajian",
     )
     app = create_app(settings, t4_adapter=object())
 
-    response = TestClient(app).get(
-        "/t4/api/sources",
-        headers={"X-T4-Token": "gateway-test-token"},
-    )
+    response = TestClient(app).get("/t4/api/sources")
 
     assert response.status_code == 200
     assert response.json() == {
