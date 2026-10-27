@@ -23,6 +23,12 @@ jobs:
           python-version: "3.12"
 
       - name: Verify Linux runtime and tests
+        env:
+          # The hosted runner has no container /data volume. Keep CI state
+          # writable without changing the image's runtime defaults.
+          T4_PLUGIN_DIR: ${{ runner.temp }}/t4-plugins
+          T4_LOG_FILE: ${{ runner.temp }}/t4-logs/playback.jsonl
+          T4_COMPATIBILITY_REPORT: ${{ runner.temp }}/t4-reports/compatibility.json
         run: |
           python -m pip install ".[test]"
           python -m pip check

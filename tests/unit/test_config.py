@@ -12,6 +12,8 @@ def test_default_settings_are_local_and_non_running() -> None:
 
 def test_settings_read_public_environment_overrides(monkeypatch) -> None:
     monkeypatch.delenv("ALIST_TVBOX_SUBSCRIPTION_URL", raising=False)
+    for name in ("T4_PLUGIN_DIR", "T4_LOG_FILE", "T4_COMPATIBILITY_REPORT"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("T4_SERVICE_NAME", "custom-sidecar")
     monkeypatch.setenv("T4_VERSION", "9.9.9")
     monkeypatch.setenv("T4_WORKER_STATUS", "ready")
