@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alist-tvbox-t4-sidecar"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Non-invasive T4 sidecar for authorized AList-TVBox subscriptions"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,12 @@ dependencies = [
     "pycryptodome>=3.20,<4",
     "lxml>=5,<7",
     "python-multipart>=0.0.9,<1",
+    "m3u8>=6,<7",
+    "beautifulsoup4>=4.12,<5",
+    "pyquery>=2,<3",
+    "cryptography>=44,<50",
+    "pycryptodomex>=3.20,<4",
+    "Pillow>=11,<13",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +35,9 @@ addopts = "-q"
 
 [tool.setuptools.packages.find]
 include = ["sidecar*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sidecar.__version__"}
 
 [tool.setuptools.package-data]
 "sidecar.web" = ["index.html", "assets/icons/*.svg", "assets/icons/LICENSE"]

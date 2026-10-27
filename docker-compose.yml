@@ -7,8 +7,12 @@ services:
     env_file:
       - .env
     environment:
+      # Preserve HTTPS from the reverse proxy when generating client API URLs.
+      FORWARDED_ALLOW_IPS: "*"
       T4_SOURCES_FILE: ${T4_SOURCES_FILE:-/app/config/sources.json}
       T4_PLUGIN_DIR: ${T4_PLUGIN_DIR:-/data/plugins}
+      T4_LOG_FILE: /data/logs/playback.jsonl
+      T4_COMPATIBILITY_REPORT: /data/reports/compatibility-latest.json
       T4_SUBSCRIPTION_CACHE_TTL: ${T4_SUBSCRIPTION_CACHE_TTL:-30}
       T4_UPLOAD_MAX_BYTES: ${T4_UPLOAD_MAX_BYTES:-2000000}
     ports:

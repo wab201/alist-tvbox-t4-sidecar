@@ -1,6 +1,6 @@
 # AList-TVBox 订阅转 T4 Sidecar 项目计划
 
-> 版本：v0.3（2026-10-26 取消 Sidecar 额外鉴权）
+> 版本：v0.4（2026-10-26 片单导航及原生 AT 推送兼容）
 > 基线日期：2026-10-22
 > 计划状态：独立附属容器方案
 > 分析基线：`power721/alist-tvbox` master，已核验提交 `e0210e5ccc83a1a05f0fd3c5a636c44e8f080370`
@@ -102,7 +102,8 @@ AT 页面中的独立 T4 入口只实现以下功能：
 - 任意第三方依赖的自动下载和执行。
 - action、追剧写回、History、播放同步。
 - 多租户后台和用户级权限模型。
-- 通过公开接口暴露 AT token、Cookie、secret、secspider keyring。
+- 通过管理页面、能力快照或 type=4 站点配置暴露 AT token、Cookie、secret、secspider keyring；
+  原生 AT 推送按原版客户端合同透传自身 `jar/ext`，仅供可信客户端使用。
 
 ## 3. 插件兼容矩阵
 
@@ -115,7 +116,8 @@ AT 页面中的独立 T4 入口只实现以下功能：
 | AT 过滤器 | 支持 | 随 `Atvp.py` 在 Worker 内加载 | 只读执行，失败策略可配置 |
 | `csp_PyProxy` | 支持 | 由 `Atvp.py` 转换为 Worker 插件任务 | 禁止直接透传成公共 Python 服务 |
 | `csp_WebHome` / `csp_Nostr` | 页面入口 | 能力快照标记 `page_entry_only` | 不等同于标准 T4 VOD |
-| `csp_Push` | 客户端本地 | 能力快照标记 `client_local_only` | 不等同于 AT 服务端 `/vod`、`/play` |
+| `csp_PianDan` | 标题导航 | `/pian-dan` 桥接并固定 `indexs=1` | FongMi 按标题搜索；非 indexs 客户端由 Sidecar 检索其他源并委托真实播放 |
+| `csp_Push` | 原生客户端透传 | 统一订阅保留 `push_agent/type=3/csp_Push` 和原始 `jar/ext` | `native_client_passthrough`；不是独立 T4，需影视 JAR 运行时 |
 | AT 原生 Java/网盘站点 | 旁路支持 | 调用 AT 原生 `/vod`、`/play` 等路由 | 不等同于 Python 插件执行 |
 | 外部依赖未打包插件 | 暂不支持 | 不在线安装依赖 | 返回缺失依赖诊断 |
 
@@ -531,7 +533,9 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 
 ### 10.3 安全验收
 
-- AT token、Cookie、secret、keyring 不进入客户端响应和普通日志。
+- AT token、Cookie、secret、keyring 不进入管理响应和普通日志；type=4 配置不携带原始 ext。
+- 原生 AT 推送仅在统一订阅下发原版 `jar/ext`，不新增授权字段或暴露 secspider keyring，
+  完整订阅仅供可信客户端导入。
 - 管理 API 与公共 T4 API 分离。
 - Worker 不运行在 Gateway 主进程内。
 - Worker 无法写入 AT 数据目录。
@@ -574,7 +578,8 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 9. 做官方插件、自定义插件、GET/POST、超时和真实播放回归。
 10. 最后接入反向代理并完成非侵入验收。
 
-任何插件如果依赖页面型入口、客户端本地能力、未打包依赖或未授权外部资源，第一期只记录能力状态，不扩大 Worker 权限。
+页面型入口、未打包依赖或未授权外部资源仍只记录能力状态，不扩大 Worker 权限。
+AT 推送采用原生客户端透传，不将 Android 能力搬入 Worker，也不额外增加用户配置。
 
 ## 13. 项目决策
 
@@ -585,6 +590,8 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 - **自定义 secspider 优先复用 AT 动态下发的 Atvp loader；只读 keyring 仅作为部署回退，不通过 Web 暴露密钥。**
 - **AT Web 页面入口优先用反向代理 `/t4/`，不把 Sidecar 依赖写入 AT 构建产物。**
 - **第一期先做只读浏览和播放；通用管理 action、History、WebHome 和多租户后置，Media 原版 `/play` 伪动作由内置源原生桥接覆盖。**
+- **片单导航保留原版标题搜片语义；AT 推送保留原版客户端站点并汇入同一订阅，不伪装成标准 T4。**
+- **多个 AT source 只导出首个可用 `push_agent`；无 JAR 的推送条目不伪造为 type=4。**
 
 ## 14. 源码证据映射
 
@@ -601,3 +608,17 @@ M6 Web 入口可以与 M5 并行，但不能替代 M7 的真实插件和播放�
 | AT Web 导航 | `web-ui/src/router/index.ts`、`web-ui/src/App.vue` | AT 当前菜单是 Vue 路由；直接加入菜单会修改 AT 前端，因此第一期采用反向代理入口 |
 
 这些文件是设计基线，不代表 Sidecar 需要复制 AT 的数据库或 Java 业务实现。Sidecar 只复用其可观察的订阅和插件运行合同。
+
+## 15. 0.2.0 兼容门禁迭代
+
+版本基线、阶段验收和实际进展以 `CHANGELOG.md`、`IMPLEMENTATION_NODES.md` 的 M15 为准；
+检测操作和判定规则见 `COMPATIBILITY_GATE.md`。
+
+本轮最小闭环是全订阅条目清单、七阶段抽样、独立 Worker、进度/停止、
+逐插件证据和报告导出，不自动发布、不替换 AT 插件、不增加鉴权。
+先建立可重复的失败矩阵，再按源码责任处理兼容问题，不把“检测器能运行”误写成“所有源均兼容”。
+
+下一轮从加载、分类/目录、搜索、详情、封面到解析/媒体按依赖顺序修复；
+客户端推送、页面入口及服务器媒体证据与真机播放分别验收。
+报告需要同时保留服务版本、进程启动源码指纹、脱敏描述符指纹和抽样范围。
+发布前再检查报告身份和真实客户端结果，本地门禁不等价于 NAS 已升级。

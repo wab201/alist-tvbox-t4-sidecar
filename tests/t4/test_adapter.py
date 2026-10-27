@@ -7,7 +7,7 @@ from sidecar.at.subscription import PluginDescriptor, SubscriptionSnapshot
 from sidecar.gateway.config import Settings
 from sidecar.gateway.main import create_app
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
-from sidecar.t4.adapter import T4Adapter, T4Request
+from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter, T4Request
 
 
 class FakeWorker:
@@ -172,6 +172,50 @@ def test_adapter_does_not_invent_play_ids_for_empty_episode_entries() -> None:
     episodes = detail["list"][0]["vod_play_url"].split("#")
     assert episodes[:2] == ["$", "Placeholder$"]
     assert episodes[2].startswith("Play$t4_")
+
+
+def test_folder_category_requests_unwrap_opaque_card_ids(tmp_path) -> None:
+    class FolderWorker(FakeWorker):
+        def call(self, runtime_key, plugin, method, params):
+            self.calls.append((runtime_key, method, params))
+            if method == "home":
+                return {"list": [{"vod_id": "atvp_detail:private-folder", "vod_name": "Folder",
+                                  "vod_tag": "folder"}]}
+            return {"list": []}
+
+    registry = SourceRegistry((source(),))
+    worker = FolderWorker()
+    adapter = T4Adapter(registry, worker, subscription_fetcher=fetcher)
+    app = create_app(Settings(plugin_dir=str(tmp_path)), registry, fetcher, adapter)
+    with TestClient(app) as client:
+        api = "/t4/fm/source-a/demo/"
+        folder = client.get(api).json()["list"][0]["vod_id"]
+        assert folder.startswith("t4_")
+        for method in ("GET", "POST"):
+            response = client.request(method, api, params={"t": folder, "pg": "2"})
+            assert response.status_code == 200
+            assert worker.calls[-1][2]["tid"] == "atvp_detail:private-folder"
+        assert client.get(api, params={"t": "t4_expired"}).status_code == 400
+
+
+def test_batch_close_reinitializes_navigation_workers_on_the_next_run() -> None:
+    class Pool:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, key, method, params):
+            self.calls.append(method)
+            return {}
+
+        def close(self):
+            pass
+
+    pool = Pool()
+    invoker = AtvpWorkerInvoker(pool)
+    invoker.call("source:child", descriptor(), "home", {})
+    invoker.close()
+    invoker.call("source:child", descriptor(), "home", {})
+    assert pool.calls == ["init", "home", "init", "home"]
 
 
 def test_t4_route_supports_get_and_post() -> None:

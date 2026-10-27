@@ -54,6 +54,24 @@
     .fm-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
     .snapshot { margin-top: 12px; padding: 12px; background: #e9eef3; max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
     .entry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .diagnostic-controls { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: end; }
+    .trace-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: end; margin-top: 14px; }
+    .check-label { display: flex; align-items: center; gap: 6px; min-height: 38px; }
+    .check-label input { width: 16px; min-height: 16px; }
+    #diagnostic-status { margin-top: 12px; overflow-wrap: anywhere; white-space: pre-line; }
+    #trace-log { min-height: 140px; max-height: 420px; }
+    .gate-controls { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(140px, 1fr) 80px auto auto auto; gap: 10px; align-items: end; }
+    .gate-filters { display: flex; gap: 10px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+    .gate-filters select { width: auto; max-width: 100%; }
+    .gate-table-wrap { overflow: auto; max-height: 560px; border: 1px solid var(--line); }
+    .gate-table { width: 100%; min-width: 760px; border-collapse: collapse; background: var(--panel); font-size: 12px; }
+    .gate-table th, .gate-table td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .gate-table th { position: sticky; top: 0; background: #edf2f7; white-space: nowrap; }
+    .gate-table td:first-child { max-width: 180px; overflow-wrap: anywhere; }
+    .gate-pass { color: var(--ok); } .gate-fail { color: var(--danger); }
+    .gate-blocked { color: #9a6700; } .gate-unsupported, .gate-not_tested { color: var(--muted); }
+    #gate-summary { overflow-wrap: anywhere; margin-top: 12px; }
+    #gate-evidence { max-height: 380px; }
     .entry-value { display: block; font-size: 12px; overflow-wrap: anywhere; }
     .subscription-entry { display: flex; align-items: center; gap: 12px; }
     .subscription-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
@@ -68,9 +86,13 @@
       header { align-items: start; } h1 { font-size: 21px; }
       .plugin-row { grid-template-columns: 24px minmax(0, 1fr); padding: 12px; }
       .row-actions { grid-column: 2; justify-content: flex-start; }
-      .controls, .source-controls, .entry-grid { grid-template-columns: 1fr; }
+      .controls, .source-controls, .entry-grid, .diagnostic-controls { grid-template-columns: 1fr; }
+      .trace-controls { grid-template-columns: minmax(0, 1fr) auto auto; }
+      .trace-controls > label:first-child { grid-column: 1 / -1; }
       .fm-entry { flex-wrap: wrap; } .fm-entry code { flex-basis: 100%; }
       .section-head { flex-wrap: wrap; }
+      .gate-controls { grid-template-columns: minmax(0, 1fr) 80px; }
+      .gate-controls > label:first-child, .gate-controls > label:nth-child(2) { grid-column: 1 / -1; }
     }
   </style>
 </head>
@@ -92,7 +114,7 @@
   <section aria-labelledby="upload-heading">
     <div class="section-head"><h2 id="upload-heading">上传本地插件</h2><span class="badge">Python / JavaScript</span></div>
     <div class="controls">
-      <label>插件文件<input id="plugin-file" type="file" accept=".py,.js"></label>
+      <label>插件文件或依赖包<input id="plugin-file" type="file" accept=".py,.js,.zip"></label>
       <button id="upload-plugin" class="primary"><img src="/t4/assets/icons/upload.svg" alt="">上传并注册</button>
     </div>
   </section>
@@ -114,6 +136,41 @@
   <section class="entry-grid">
     <div><span class="badge">Web 管理入口</span><code id="entry-url" class="entry-value"></code></div>
     <div><span class="badge">健康检查地址</span><code id="health-url" class="entry-value"></code></div>
+  </section>
+  <section aria-labelledby="gate-heading">
+    <div class="section-head"><h2 id="gate-heading">订阅兼容门禁</h2><span id="gate-state" class="badge">未检测</span></div>
+    <div class="gate-controls">
+      <label>检测范围<select id="gate-source"><option value="">全部订阅及本地插件</option></select></label>
+      <label>搜索词（留空取卡片片名）<input id="gate-keyword" maxlength="120" autocomplete="off"></label>
+      <label>并发<input id="gate-concurrency" type="number" min="1" max="3" value="2"></label>
+      <button id="gate-start" class="primary"><img src="/t4/assets/icons/play.svg" alt="">开始检测</button>
+      <button id="gate-cancel" disabled>停止</button>
+      <button id="gate-export" class="icon" title="导出兼容报告" aria-label="导出兼容报告" disabled><img src="/t4/assets/icons/arrow-down.svg" alt=""></button>
+    </div>
+    <div id="gate-summary" role="status" aria-live="polite">暂无检测报告</div>
+    <div class="gate-filters">
+      <label>结果<select id="gate-filter"><option value="">全部结果</option><option value="pass">通过</option><option value="fail">失败</option><option value="blocked">受阻</option><option value="unsupported">不适用</option><option value="not_tested">未测试</option></select></label>
+      <label>插件类型<select id="gate-type"><option value="">全部类型</option></select></label>
+    </div>
+    <div class="gate-table-wrap"><table class="gate-table"><thead><tr><th>插件</th><th>类型</th><th>首页</th><th>分类</th><th>搜索</th><th>详情</th><th>图片</th><th>解析</th><th>媒体</th><th>证据</th></tr></thead><tbody id="gate-rows"></tbody></table></div>
+    <pre id="gate-evidence" class="snapshot" hidden></pre>
+  </section>
+  <section aria-labelledby="diagnostics-heading">
+    <div class="section-head"><h2 id="diagnostics-heading">播放链路诊断</h2><span id="diagnostic-state" class="badge">待检查</span></div>
+    <div class="diagnostic-controls">
+      <label>订阅<select id="diagnostic-source"></select></label>
+      <label>插件<select id="diagnostic-plugin"></select></label>
+      <label>片名<input id="diagnostic-keyword" maxlength="120" autocomplete="off"></label>
+      <button id="check-playback" class="primary"><img src="/t4/assets/icons/play.svg" alt="">检查</button>
+    </div>
+    <div id="diagnostic-status" role="status" aria-live="polite"></div>
+    <div class="trace-controls">
+      <label>链路 ID<input id="trace-filter" maxlength="64" autocomplete="off"></label>
+      <label class="check-label"><input id="trace-live" type="checkbox">实时日志</label>
+      <button id="refresh-traces" class="icon" title="刷新日志" aria-label="刷新日志"><img src="/t4/assets/icons/refresh-cw.svg" alt=""></button>
+      <button id="export-traces" class="icon" title="导出脱敏日志" aria-label="导出脱敏日志"><img src="/t4/assets/icons/arrow-down.svg" alt=""></button>
+    </div>
+    <pre id="trace-log" class="snapshot" aria-live="off"></pre>
   </section>
 </main>
 <dialog id="manage-dialog" aria-labelledby="dialog-title">
@@ -138,6 +195,176 @@
   let dialogOperation = null;
   let subscriptionUrl = "";
   const selectedSites = new Map();
+  const diagnosticSources = new Map();
+  const gateNames = {pass: "通过", fail: "失败", blocked: "受阻", unsupported: "不适用", not_tested: "未测试"};
+  const gateTypes = {builtin: "AT 内置", raw_python: "Python", secspider: "加密插件", javascript: "JavaScript",
+    title_search_navigation: "片单导航", native_client_passthrough: "原生客户端", page_entry_only: "页面入口",
+    unsupported_runtime: "未支持运行时", unmapped_builtin: "未映射内置源", invalid_descriptor: "订阅解析失败"};
+  const gateStageNames = {home: "首页", category: "分类", search: "搜索", detail: "详情", image: "图片", play: "解析", media: "媒体"};
+  let gateReport = null;
+  let gateLoading = false;
+  function renderGate() {
+    const report = gateReport;
+    const running = report && ["running", "cancelling"].includes(report.state);
+    $("#gate-start").disabled = Boolean(running);
+    $("#gate-cancel").disabled = !running || report?.state === "cancelling";
+    $("#gate-export").disabled = !report;
+    $("#gate-state").textContent = !report ? "未检测" : report.state === "running" ? "检测中"
+      : report.state === "cancelling" ? "正在停止" : report.gate.passed ? "抽样门禁通过 · 真机待验证"
+      : report.state === "cancelled" ? "已停止 · 未放行" : report.state === "interrupted" ? "上次任务中断"
+      : report.artifact_current === false ? "代码已变化 · 需重测" : "未放行";
+    if (!report) return;
+    $("#gate-summary").textContent = `v${report.artifact.version} · ${report.progress.completed}/${report.progress.total} 个插件 · `
+      + Object.entries(report.summary || {}).map(([key, value]) => `${gateNames[key] || key} ${value}`).join(" · ")
+      + " · 服务端抽样，非真机实播验收";
+    const types = $("#gate-type");
+    const selectedType = types.value;
+    types.replaceChildren(new Option("全部类型", ""), ...[...new Set(report.plugins.map(row => row.classification))]
+      .map(type => new Option(gateTypes[type] || type, type)));
+    if ([...types.options].some(option => option.value === selectedType)) types.value = selectedType;
+    const rows = $("#gate-rows");
+    rows.replaceChildren();
+    for (const plugin of report.plugins.filter(row => (!$("#gate-filter").value || row.status === $("#gate-filter").value)
+      && (!types.value || row.classification === types.value))) {
+      const tr = document.createElement("tr");
+      const append = text => { const td = document.createElement("td"); td.textContent = text; tr.append(td); return td; };
+      const source = diagnosticSources.get(plugin.source_id);
+      append(source?.plugins.find(item => item.id === plugin.plugin_id)?.name || plugin.name);
+      append(gateTypes[plugin.classification] || plugin.classification);
+      for (const stage of Object.keys(gateStageNames)) {
+        const evidence = plugin.stages[stage];
+        const cell = append(gateNames[evidence.status] || evidence.status);
+        cell.className = `gate-${evidence.status}`;
+        cell.title = [
+          evidence.reason || gateStageNames[stage], evidence.root_error,
+          evidence.missing_module ? `缺少模块：${evidence.missing_module}` : "",
+          evidence.warning === "mime_mismatch" ? "图片可解码，响应类型不一致" : "",
+        ].filter(Boolean).join(" · ");
+      }
+      const cell = append("");
+      const button = iconButton("arrow-down", "查看检测证据", "evidence");
+      button.onclick = () => {
+        $("#gate-evidence").hidden = false;
+        $("#gate-evidence").textContent = JSON.stringify(plugin, null, 2);
+        $("#trace-filter").value = plugin.trace_id || "";
+      };
+      cell.append(button);
+      rows.append(tr);
+    }
+  }
+  async function loadGate() {
+    if (gateLoading) return;
+    gateLoading = true;
+    try {
+      gateReport = (await request("/t4/api/compatibility/latest")).report;
+      renderGate();
+    } finally { gateLoading = false; }
+  }
+  $("#gate-filter").onchange = renderGate;
+  $("#gate-type").onchange = renderGate;
+  $("#gate-start").onclick = async () => {
+    $("#gate-start").disabled = true;
+    try {
+      const source = $("#gate-source").value;
+      gateReport = await request("/t4/api/compatibility/runs", jsonOptions("POST", {
+        source_ids: source ? [source] : [], keyword: $("#gate-keyword").value.trim(),
+        concurrency: Number($("#gate-concurrency").value)
+      }));
+      $("#gate-evidence").hidden = true;
+      renderGate();
+    } catch (error) { setStatus(error.message, "error"); $("#gate-start").disabled = false; }
+  };
+  $("#gate-cancel").onclick = async () => {
+    try { await request("/t4/api/compatibility/cancel", {method: "POST"}); await loadGate(); }
+    catch (error) { setStatus(error.message, "error"); }
+  };
+  $("#gate-export").onclick = () => {
+    const anchor = document.createElement("a");
+    anchor.href = "/t4/api/compatibility/export";
+    anchor.download = "t4-compatibility.json";
+    document.body.append(anchor); anchor.click(); anchor.remove();
+  };
+  setInterval(() => {
+    if (!document.hidden && gateReport && ["running", "cancelling"].includes(gateReport.state)) {
+      loadGate().catch(error => setStatus(error.message, "error"));
+    }
+  }, 2000);
+  function renderDiagnosticSources() {
+    const select = $("#diagnostic-source");
+    const previous = select.value;
+    select.replaceChildren(...Array.from(diagnosticSources, ([id, value]) => new Option(value.name, id)));
+    const active = diagnosticSources.get(previous);
+    if (active?.plugins?.length) select.value = previous;
+    else select.value = Array.from(diagnosticSources).find(([, source]) => source.plugins.length)?.[0] || previous;
+    select.onchange();
+    const gateSource = $("#gate-source");
+    const previousGate = gateSource.value;
+    gateSource.replaceChildren(new Option("全部订阅及本地插件", ""),
+      ...Array.from(diagnosticSources).filter(([, value]) => value.plugins.length)
+        .map(([id, value]) => new Option(value.name, id)));
+    gateSource.value = previousGate;
+  }
+  $("#diagnostic-source").onchange = () => {
+    const select = $("#diagnostic-plugin");
+    const previous = select.value;
+    const source = diagnosticSources.get($("#diagnostic-source").value);
+    select.replaceChildren(...(source?.plugins || []).filter(plugin => plugin.t4_supported !== false)
+      .map(plugin => new Option(plugin.name, plugin.id)));
+    if (Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+    $("#check-playback").disabled = !select.options.length;
+  };
+  async function loadTraces() {
+    const trace = $("#trace-filter").value.trim();
+    const payload = await request(`/t4/api/diagnostics/events?limit=300&trace=${encodeURIComponent(trace)}`);
+    $("#trace-log").textContent = (payload.events || []).map(event => {
+      const {time, stage, trace_id, ...fields} = event;
+      return `${new Date(time * 1000).toLocaleTimeString()} ${stage} [${trace_id}]\n${JSON.stringify(fields)}`;
+    }).join("\n\n") || "暂无链路记录";
+  }
+  $("#refresh-traces").onclick = () => loadTraces().catch(error => setStatus(error.message, "error"));
+  $("#trace-filter").onchange = $("#refresh-traces").onclick;
+  $("#trace-live").onchange = () => {
+    if ($("#trace-live").checked) $("#trace-filter").value = "";
+    $("#refresh-traces").onclick();
+  };
+  $("#export-traces").onclick = () => {
+    const anchor = document.createElement("a");
+    anchor.href = `/t4/api/diagnostics/export?trace=${encodeURIComponent($("#trace-filter").value.trim())}`;
+    anchor.download = "t4-playback-log.jsonl";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  };
+  $("#check-playback").onclick = async () => {
+    const keyword = $("#diagnostic-keyword").value.trim();
+    if (!keyword) { $("#diagnostic-keyword").focus(); return; }
+    $("#check-playback").disabled = true;
+    $("#diagnostic-state").textContent = "检查中";
+    $("#diagnostic-status").textContent = "";
+    try {
+      const result = await request("/t4/api/diagnostics/check", jsonOptions("POST", {
+        source_id: $("#diagnostic-source").value, plugin_id: $("#diagnostic-plugin").value, keyword
+      }));
+      $("#diagnostic-state").textContent = result.ok ? "媒体字节通过 · 真机待验证"
+        : result.reason === "manifest_only" ? "清单可达 · 媒体待验证" : "未通过";
+      const stages = {search: "搜索", detail: "详情", play: "解析", media: "媒体", media_bytes: "媒体"};
+      const reasons = {no_results: "未找到影片", no_episodes: "没有可检查的分集",
+        non_http_media: "未返回 HTTP 媒体地址", manifest_only: "仅验证了清单，分片和解码仍待验证"};
+      $("#diagnostic-status").textContent = result.tracks?.length
+        ? result.tracks.map(track => `${({audio: "音频", video: "视频", media: "媒体"})[track.kind] || track.kind}：HTTP ${track.status || "未知"} · ${track.bytes || 0} 字节 · ${track.duration_ms || 0} 毫秒${track.reason ? " · " + (reasons[track.reason] || track.reason) : ""}`).join("\n")
+        : `${stages[result.stage] || result.stage}：${result.missing_module ? "缺少模块 " + result.missing_module
+          : reasons[result.reason] || result.root_error || result.error || "未完成"}`;
+      $("#trace-filter").value = result.trace_id || "";
+      await loadTraces();
+      await loadGate();
+    } catch (error) {
+      $("#diagnostic-state").textContent = "检查失败";
+      $("#diagnostic-status").textContent = error.message;
+    } finally { $("#check-playback").disabled = false; }
+  };
+  setInterval(() => {
+    if ($("#trace-live").checked && !document.hidden) loadTraces().catch(() => {});
+  }, 3000);
 
   function setStatus(text, kind = "muted") {
     $("#status").textContent = text;
@@ -205,6 +432,8 @@
   async function loadPlugins() {
     const payload = await request("/t4/api/plugins");
     plugins = payload.plugins || [];
+    diagnosticSources.set("local-uploaded", {name: "本地插件", plugins});
+    renderDiagnosticSources();
     if (!busy) renderPlugins();
   }
   function showDialog(mode, plugin) {
@@ -324,21 +553,30 @@
       select.onchange = () => {
         const plugin = selected();
         selectedSites.set(source.id, select.value);
-        smoke.disabled = copy.disabled = !plugin?.fm_path;
-        fmLink.textContent = plugin?.fm_path ? fmUrl(plugin) : "";
+        smoke.disabled = !plugin?.fm_path;
+        copy.disabled = !plugin?.fm_path && !plugin?.client_config_path;
+        const copyLabel = plugin?.client_config_path ? "复制影视订阅地址" : "复制插件 API";
+        copy.title = copyLabel;
+        copy.setAttribute("aria-label", copyLabel);
+        fmLink.textContent = plugin?.client_config_path
+          ? new URL(plugin.client_config_path, location.origin).href
+          : plugin?.fm_path ? fmUrl(plugin) : "";
       };
       const load = async (refreshCache = false) => {
         refresh.disabled = true;
         try {
           const snapshot = await request(`/t4/api/sources/${encodeURIComponent(source.id)}/subscription?refresh=${refreshCache}`);
           items = snapshot.plugins || [];
+          diagnosticSources.set(source.id, {name: source.name, plugins: items});
+          renderDiagnosticSources();
           select.replaceChildren();
           items.forEach(plugin => {
-            const option = new Option(`${plugin.name} · ${plugin.id}${plugin.t4_supported === false ? "（非标准 T4）" : ""}`, plugin.id);
-            option.disabled = plugin.t4_supported === false;
+            const suffix = plugin.client_supported ? "（原生推送）" : plugin.t4_supported === false ? "（非标准 T4）" : "";
+            const option = new Option(`${plugin.name} · ${plugin.id}${suffix}`, plugin.id);
+            option.disabled = plugin.t4_supported === false && !plugin.client_supported;
             select.add(option);
           });
-          const available = items.filter(plugin => plugin.t4_supported !== false);
+          const available = items.filter(plugin => plugin.t4_supported !== false || plugin.client_supported);
           select.disabled = !available.length;
           if (!items.length) select.add(new Option("暂无插件", ""));
           select.value = available.find(plugin => plugin.id === selectedSites.get(source.id))?.id || available[0]?.id || "";
@@ -356,7 +594,12 @@
         } finally { refresh.disabled = false; }
       };
       refresh.onclick = () => load(true).then(() => setStatus("AT 订阅已重新读取", "ok")).catch(() => {});
-      copy.onclick = () => copyText(fmUrl(selected())).then(() => setStatus("插件 API 地址已复制", "ok")).catch(error => setStatus(error.message, "error"));
+      copy.onclick = () => {
+        const plugin = selected();
+        const native = Boolean(plugin?.client_config_path);
+        const url = native ? new URL(plugin.client_config_path, location.origin).href : fmUrl(plugin);
+        copyText(url).then(() => setStatus(native ? "影视订阅地址已复制" : "插件 API 地址已复制", "ok")).catch(error => setStatus(error.message, "error"));
+      };
       smoke.onclick = async () => {
         smoke.disabled = true;
         try {
@@ -374,7 +617,7 @@
   const uploadButton = $("#upload-plugin");
   uploadButton.onclick = () => runOperation(async () => {
     const file = $("#plugin-file").files[0];
-    if (!file) throw new Error("请选择 .py 或 .js 文件");
+    if (!file) throw new Error("请选择 .py、.js 或 .zip 文件");
     const form = new FormData();
     form.append("file", file);
     setStatus("上传并校验插件中");
@@ -398,6 +641,8 @@
       await loadSubscriptionLink();
       await loadPlugins();
       await loadSources();
+      await loadTraces();
+      await loadGate();
       setStatus(`已加载 ${plugins.length} 个本地插件`, "ok");
     } catch (error) { setStatus(error.message, "error"); }
   }

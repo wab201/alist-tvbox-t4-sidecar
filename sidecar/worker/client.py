@@ -6,10 +6,15 @@ import subprocess
 import sys
 import threading
 import uuid
+import hashlib
+import time
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from sidecar.worker.protocol import WorkerRequest, WorkerResponse
+from sidecar.worker.errors import safe_error_fields
+from sidecar.diagnostics import current_trace, record
 
 
 class WorkerError(RuntimeError):
@@ -27,10 +32,19 @@ class WorkerProtocolError(WorkerError):
 class WorkerRemoteError(WorkerError):
     """Worker rejected a request."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        self.details = safe_error_fields(details or {})
+
+    def public_error(self) -> dict[str, Any]:
+        missing = self.details.get("missing_module")
+        message = (
+            f"插件缺少依赖模块：{missing}" if missing
+            else f"插件执行失败：{self.details.get('root_error', 'RuntimeError')}"
+        )
+        return {"code": self.code, "message": message, **self.details}
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +58,8 @@ class WorkerSession:
         self._process: subprocess.Popen[str] | None = None
         self._responses: queue.Queue[WorkerResponse | Exception] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
+        self._trace_context = current_trace()
         self._lock = threading.Lock()
         self.start()
 
@@ -58,9 +74,10 @@ class WorkerSession:
             [sys.executable, "-m", "sidecar.worker.process"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
+            errors="replace",
             bufsize=1,
         )
         self._process = process
@@ -70,6 +87,38 @@ class WorkerSession:
             daemon=True,
         )
         self._reader.start()
+        self._stderr_reader = threading.Thread(
+            target=self._read_stderr, args=(process,),
+            name=f"t4-worker-stderr-{process.pid}", daemon=True,
+        )
+        self._stderr_reader.start()
+
+    def _read_stderr(self, process: subprocess.Popen[str]) -> None:
+        if process.stderr is None:
+            return
+        window, count, suppressed = time.monotonic(), 0, 0
+        while chunk := process.stderr.readline(4096):
+            context = dict(self._trace_context)
+            store = context.pop("store", None)
+            if store is not None:
+                if time.monotonic() - window >= 1:
+                    if suppressed:
+                        store.emit("worker.stderr_suppressed", **context,
+                                   session=process.pid, count=suppressed)
+                    window, count, suppressed = time.monotonic(), 0, 0
+                count += 1
+                if count > 20:
+                    suppressed += 1
+                    continue
+                # Plugin stderr may contain cookies, ext or full URLs. Keep metadata only.
+                exception = re.match(r"^([A-Za-z_]\w*(?:Error|Exception)):", chunk)
+                store.emit(
+                    "worker.stderr", **context, bytes=len(chunk.encode("utf-8")),
+                    session=process.pid,
+                    level="error" if "Error" in chunk or "Traceback" in chunk else "info",
+                    fingerprint=hashlib.sha256(chunk.encode()).hexdigest()[:16],
+                    **({"error": exception.group(1)} if exception else {}),
+                )
 
     def _read_responses(self) -> None:
         process = self._process
@@ -99,6 +148,7 @@ class WorkerSession:
         timeout: float | None = None,
     ) -> Any:
         with self._lock:
+            self._trace_context = current_trace()
             process = self._process
             if process is None or process.poll() is not None:
                 raise WorkerError("worker is not running")
@@ -130,6 +180,7 @@ class WorkerSession:
                 raise WorkerRemoteError(
                     str(error.get("code", "worker_error")),
                     str(error.get("message", "worker rejected request")),
+                    error,
                 )
             return response_or_error.result
 
@@ -155,8 +206,12 @@ class WorkerSession:
                     process.wait(timeout=2)
         if self._reader is not None:
             self._reader.join(timeout=2)
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=2)
         if process.stdout is not None:
             process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
     def __enter__(self) -> "WorkerSession":
         return self
@@ -190,12 +245,26 @@ class WorkerPool:
         timeout: float | None = None,
     ) -> Any:
         session = self._session_for(source_id)
+        start = time.monotonic()
+        record("worker.start", method=method, session=session.pid)
         try:
-            return session.request(method, params, timeout=timeout)
+            result = session.request(method, params, timeout=timeout)
+            record("worker.complete", method=method, session=session.pid,
+                   duration_ms=round((time.monotonic() - start) * 1000))
+            return result
         except WorkerTimeoutError:
+            record("worker.timeout", method=method, session=session.pid)
             self.restart(source_id)
             raise
-        except WorkerError:
+        except WorkerError as exc:
+            record(
+                "worker.failed", method=method, session=session.pid, error=type(exc).__name__,
+                **({
+                    "reason": exc.code,
+                    "fingerprint": hashlib.sha256(exc.message.encode()).hexdigest()[:16],
+                    **exc.details,
+                } if isinstance(exc, WorkerRemoteError) else {}),
+            )
             self.restart(source_id)
             raise
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
 
 from sidecar.at.subscription import PluginDescriptor, _builtin_route
+from sidecar.diagnostics import record
 
 
 class NativeAtError(RuntimeError):
@@ -46,6 +48,11 @@ class NativeAtClient:
             raise NativeAtUnsupportedError(
                 "builtin source has no server-side T4 route"
             )
+        if plugin.api == "csp_PianDan" and method in {"detail", "play", "action"}:
+            raise NativeAtUnsupportedError(
+                "PianDan is title-search navigation; select a card in the client "
+                "to search other sources, not a standalone detail or play API"
+            )
         if method in {"play", "action"}:
             path = self._play_route(plugin) if method == "play" else "/play"
             query = self._play_query(plugin, params)
@@ -57,12 +64,33 @@ class NativeAtClient:
                 )
             query = self._catalog_query(plugin, method, params)
 
+        # Unknown players must not be advertised to AT as DASH-capable FongMi.
+        default_client = "t4-sidecar" if method == "play" else "com.fongmi.android.tv"
+        headers = {"X-CLIENT": str(params.get("client") or default_client)}
+        payload = self._request(plugin, path, query, headers)
+        if plugin.api == "csp_PianDan" and method == "home":
+            recommendations = self._request(plugin, path, {"t": "0"}, headers)
+            payload["list"] = recommendations.get("list", [])
+        return payload
+
+    def _request(
+        self,
+        plugin: PluginDescriptor,
+        path: str,
+        query: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
         endpoint = self._endpoint(plugin, path)
-        headers = {"X-CLIENT": str(params.get("client") or "com.fongmi.android.tv")}
+        start = time.monotonic()
         try:
             response = self._client.get(endpoint, params=query, headers=headers)
         except httpx.HTTPError as exc:
+            record("at.failed", route=path.strip("/"), error=type(exc).__name__,
+                   duration_ms=round((time.monotonic() - start) * 1000))
             raise NativeAtError("AT native request failed before receiving a response") from exc
+        record("at.response", route=path.strip("/"), status=response.status_code,
+               duration_ms=round((time.monotonic() - start) * 1000),
+               bytes=len(response.content))
         if response.status_code < 200 or response.status_code >= 300:
             raise NativeAtError(f"AT native request returned status {response.status_code}")
         try:
@@ -183,7 +211,13 @@ class NativeAtClient:
     ) -> None:
         if not isinstance(value, dict):
             return
-        if route in {"/bilibili", "/media"}:
+        if route == "/pian-dan":
+            for key, item in value.items():
+                if item is not None and item != "" and key not in {
+                    "t", "pg", "ac", "wd", "quick",
+                }:
+                    query[key] = str(item)
+        elif route in {"/bilibili", "/media"}:
             for key, item in value.items():
                 if item is not None and item != "":
                     query[f"filter.{key}"] = str(item)

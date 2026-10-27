@@ -23,7 +23,7 @@ class WorkerResponse:
     request_id: str
     ok: bool
     result: Any = None
-    error: dict[str, str] | None = None
+    error: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkerResponse":

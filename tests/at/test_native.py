@@ -80,6 +80,7 @@ def test_native_bilibili_catalog_and_play_keep_original_routes() -> None:
     assert requests[1].url.params["ids"] == "BV-native"
     assert requests[2].url.params["bvid"] == "BV-native"
     assert requests[2].url.params["dash"] == "true"
+    assert requests[2].headers["X-CLIENT"] == "t4-sidecar"
 
 
 def test_native_media_detail_uses_id_and_preserves_action_play_id() -> None:

@@ -166,10 +166,47 @@ def test_parser_marks_page_and_client_local_builtins_without_claiming_t4_support
     assert metadata["home"]["t4_supported"] is False
     assert metadata["home"]["compatibility_mode"] == "page_entry_only"
     assert metadata["home"]["page_entry"] is True
-    assert metadata["push_agent"]["compatibility_mode"] == "client_local_only"
+    assert metadata["push_agent"]["compatibility_mode"] == "native_client_passthrough"
+    assert metadata["push_agent"]["client_supported"] is False
     assert metadata["push_agent"]["capabilities"] == []
     assert metadata["nostr"]["page_entry"] is True
     assert snapshot.plugin_for("csp_Push").plugin_id == "push_agent"
+
+
+def test_native_push_keeps_original_jar_ext_and_fixed_client_key() -> None:
+    ext = encoded_ext({"api": AT_BASE, "token": "private-token", "secret": "private-secret"})
+    site = {
+        "key": "renamed-push", "name": "AT Push", "api": "csp_Push",
+        "jar": f"{AT_BASE}/spring.jar;md5;fixture", "ext": ext,
+        "searchable": 0, "changeable": 0, "type": 3,
+    }
+    snapshot = SubscriptionParser(AT_BASE).parse("demo", {"sites": [site]})
+    plugin = snapshot.plugins[0]
+    assert plugin.native_client_site == {**site, "key": "push_agent"}
+    metadata = json.dumps(snapshot.public_metadata())
+    assert "private" not in metadata
+    assert ext not in metadata
+    assert plugin.public_metadata()["client_supported"] is True
+    assert plugin.public_metadata()["t4_supported"] is False
+
+
+def test_native_push_can_use_the_subscription_global_spider_jar() -> None:
+    snapshot = SubscriptionParser(AT_BASE).parse("demo", {
+        "spider": f"{AT_BASE}/spring.jar",
+        "sites": [{"key": "push_agent", "api": "csp_Push", "type": 3}],
+    })
+    assert snapshot.plugins[0].native_client_site["jar"] == f"{AT_BASE}/spring.jar"
+
+
+def test_piandan_metadata_describes_navigation_not_fake_playback() -> None:
+    snapshot = SubscriptionParser(AT_BASE).parse("demo", {
+        "sites": [{"key": "csp_PianDan", "api": "csp_PianDan", "indexs": 1}],
+    })
+    plugin = snapshot.plugins[0]
+    assert plugin.site_options["indexs"] == 1
+    assert plugin.public_metadata()["capabilities"] == ["home", "category", "search", "detail", "play"]
+    assert plugin.public_metadata()["delegated_capabilities"] == ["detail", "play"]
+    assert plugin.public_metadata()["compatibility_mode"] == "title_search_navigation"
 
 
 def test_parser_maps_telegram_builtins_to_their_original_server_routes() -> None:

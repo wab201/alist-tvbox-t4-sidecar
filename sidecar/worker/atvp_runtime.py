@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ast
 import contextlib
 import importlib.util
 import json
@@ -17,6 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import requests
+from sidecar.worker.host import PluginHost
 
 
 class AtvpRuntimeError(RuntimeError):
@@ -31,13 +33,28 @@ class AtvpRuntime:
         self._js_process: subprocess.Popen[str] | None = None
         self._js_lock = threading.Lock()
         self._temporary_directory = tempfile.TemporaryDirectory(prefix="t4-atvp-")
+        self._modules: dict[str, types.ModuleType] = {}
+        self._module_prefix = f"t4_{uuid.uuid4().hex}_"
+        self._import_paths: list[str] = []
+        self._category_filter_mode = "dict"
+        self._base_modules: dict[str, types.ModuleType | None] | None = None
+        self._host = PluginHost(self.local_proxy, "")
 
-    def init(self, extend: str) -> dict[str, Any]:
+    def init(self, extend: str, *, site_key: str = "") -> dict[str, Any]:
+        self._host.site_key = site_key
         payload = self._decode_ext(extend)
+        source = str(payload.get("source") or "")
+        common = Path(os.getenv("T4_PLUGIN_DIR", "/data/plugins")) / "common"
+        if common.is_dir():
+            self._add_import_path(common.resolve())
+        if source and not source.startswith(("http://", "https://")) and Path(source).is_file():
+            self._add_import_path(Path(source).resolve().parent)
         loader = str(payload.get("loader") or "").strip()
         module_path = self._prepare_loader(loader)
         if module_path.suffix.lower() == ".js":
             return self._init_javascript(module_path, extend)
+        if module_path.resolve() != self._vendor_path.resolve():
+            self._add_import_path(module_path.resolve().parent)
         module = self._load_module(module_path)
         self._module = module
         spider_class = getattr(module, "Spider", None)
@@ -46,6 +63,7 @@ class AtvpRuntime:
         if hasattr(spider_class, "_instance"):
             spider_class._instance = None
         self._spider = spider_class()
+        self._spider.siteKey = site_key
 
         with self._quiet_stdout():
             result = self._spider.init(extend)
@@ -53,7 +71,14 @@ class AtvpRuntime:
         return {
             "result": self._json_value(result),
             "name": self._json_value(name),
+            **({"proxy_url": self._host.endpoint} if site_key else {}),
         }
+
+    def local_proxy(self, params: dict[str, Any]) -> Any:
+        if self._spider is None:
+            raise AtvpRuntimeError("Atvp runtime is not initialized")
+        with self._quiet_stdout():
+            return self._spider.localProxy(params)
 
     def home(self, filter_value: bool = True) -> Any:
         return self._invoke("homeContent", filter_value)
@@ -65,6 +90,17 @@ class AtvpRuntime:
         filter_value: bool,
         extend: Any,
     ) -> Any:
+        if isinstance(extend, str):
+            try:
+                extend = json.loads(extend) if extend.strip() else {}
+            except ValueError as exc:
+                raise AtvpRuntimeError("Category filters must be a JSON object") from exc
+        if extend is None:
+            extend = {}
+        if not isinstance(extend, dict):
+            raise AtvpRuntimeError("Category filters must be an object")
+        if self._js_process is None and self._category_filter_mode == "json":
+            extend = json.dumps(extend, ensure_ascii=False)
         return self._invoke("categoryContent", tid, pg, filter_value, extend)
 
     def detail(self, ids: list[str]) -> Any:
@@ -80,6 +116,7 @@ class AtvpRuntime:
         return self._invoke("action", action)
 
     def close(self) -> None:
+        self._host.close()
         if self._spider is not None and hasattr(self._spider, "destroy"):
             try:
                 with self._quiet_stdout():
@@ -93,6 +130,21 @@ class AtvpRuntime:
             self._js_process.wait(timeout=2)
             self._js_process = None
         self._temporary_directory.cleanup()
+        for name, module in self._modules.items():
+            if sys.modules.get(name) is module:
+                del sys.modules[name]
+        self._modules.clear()
+        for path in self._import_paths:
+            if path in sys.path:
+                sys.path.remove(path)
+        self._import_paths.clear()
+        if self._base_modules is not None:
+            for name, previous in self._base_modules.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+            self._base_modules = None
 
     def _invoke(self, method_name: str, *args: Any) -> Any:
         if self._js_process is not None:
@@ -246,26 +298,100 @@ class AtvpRuntime:
         if spec is None or spec.loader is None:
             raise AtvpRuntimeError("Atvp loader could not be imported")
         module = importlib.util.module_from_spec(spec)
+        self._register_module(module)
+        code = path.read_bytes()
+        self._category_filter_mode = self._filter_mode(code)
         try:
             # Refresh must read current bytes, even for same-size edits in one second.
             with self._quiet_stdout():
-                exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+                exec(compile(code, str(path), "exec"), module.__dict__)
         except Exception as exc:
+            if sys.modules.get(module_name) is module:
+                del sys.modules[module_name]
+            self._modules.pop(module_name, None)
             raise AtvpRuntimeError(
                 f"Atvp loader import failed: {type(exc).__name__}"
             ) from exc
         fallback = getattr(module, "_FallbackSpider", None)
         if fallback is not None:
+            self._host.bind_base(fallback)
             base_spider.Spider = fallback
+        # ATVP creates inner/filter modules through its own types global.
+        # Register those modules without modifying the versioned vendor source.
+        spider_class = getattr(module, "Spider", None)
+        is_atvp_loader = spider_class is not None and hasattr(
+            spider_class, "_load_inner_spider_class"
+        )
+        module_types = getattr(module, "types", None)
+        if is_atvp_loader and module_types is types:
+            host_types = types.ModuleType("t4_host_types")
+            host_types.__dict__.update(vars(types))
+            runtime = self
+
+            class RegisteredModule(types.ModuleType):
+                def __init__(self, name, doc=None):
+                    super().__init__(runtime._module_prefix + name, doc)
+                    runtime._register_module(self)
+
+            host_types.ModuleType = RegisteredModule
+            module.types = host_types
+        if is_atvp_loader:
+            original = spider_class._load_inner_spider_class
+
+            def load_inner(instance, source_text):
+                self._category_filter_mode = self._filter_mode(source_text)
+                inner_class = original(instance, source_text)
+                inner_class.siteKey = self._host.site_key
+                return inner_class
+
+            spider_class._load_inner_spider_class = load_inner
         return module
 
-    @staticmethod
-    def _install_base_spider_module() -> None:
+    def _install_base_spider_module(self) -> None:
+        if self._base_modules is not None:
+            return
+        self._base_modules = {name: sys.modules.get(name) for name in ("base", "base.spider")}
         base_module = types.ModuleType("base")
         base_spider = types.ModuleType("base.spider")
         base_module.__path__ = []
         sys.modules["base"] = base_module
         sys.modules["base.spider"] = base_spider
+
+    def _register_module(self, module: types.ModuleType) -> None:
+        sys.modules[module.__name__] = module
+        self._modules[module.__name__] = module
+
+    def _add_import_path(self, path: Path) -> None:
+        value = str(path)
+        if value not in sys.path:
+            sys.path.insert(0, value)
+            self._import_paths.append(value)
+
+    @staticmethod
+    def _filter_mode(source: str | bytes) -> str:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name != "categoryContent":
+                continue
+            if not node.args.args:
+                continue
+            parameter = node.args.args[-1].arg
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call) or not call.args:
+                    continue
+                name = call.func.attr if isinstance(call.func, ast.Attribute) else (
+                    call.func.id if isinstance(call.func, ast.Name) else ""
+                )
+                argument = call.args[0]
+                direct_parameter = isinstance(argument, ast.Name) and argument.id == parameter
+                defaulted_parameter = (
+                    isinstance(argument, ast.BoolOp) and isinstance(argument.op, ast.Or)
+                    and isinstance(argument.values[0], ast.Name)
+                    and argument.values[0].id == parameter
+                )
+                if name == "loads" and (direct_parameter or defaulted_parameter):
+                    return "json"
+        return "dict"
 
     @staticmethod
     @contextlib.contextmanager

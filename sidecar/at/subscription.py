@@ -38,6 +38,7 @@ class PluginDescriptor:
     uid: str = ""
     home_page: str = ""
     site_options: dict[str, Any] = field(default_factory=dict)
+    native_client_site: dict[str, Any] = field(default_factory=dict)
 
     def worker_extend(self) -> str:
         payload: dict[str, Any] = {
@@ -70,18 +71,22 @@ class PluginDescriptor:
             if route:
                 metadata["native_route"] = route
                 capabilities = ["home", "category", "search", "detail", "play"]
-                if self.api == "csp_Media":
+                if self.api == "csp_PianDan":
+                    metadata["delegated_capabilities"] = ["detail", "play"]
+                    metadata["compatibility_mode"] = "title_search_navigation"
+                elif self.api == "csp_Media":
                     capabilities.append("action")
                 metadata["capabilities"] = capabilities
             elif self.api == "csp_Push":
                 metadata.update(
                     {
                         "t4_supported": False,
-                        "compatibility_mode": "client_local_only",
+                        "client_supported": bool(self.native_client_site),
+                        "compatibility_mode": "native_client_passthrough",
                         "capabilities": [],
                         "unsupported_reason": (
-                            "csp_Push is implemented by the original Android client "
-                            "and has no AT server VOD route"
+                            "AT Push runs in the original client via the unified "
+                            "subscription, not a standalone server T4 API"
                         ),
                     }
                 )
@@ -109,6 +114,9 @@ class PluginDescriptor:
                         ),
                     }
                 )
+        elif self.plugin_type not in {"raw_python", "secspider", "javascript"}:
+            metadata.update(t4_supported=False, capabilities=[],
+                            compatibility_mode="unsupported_runtime")
         return metadata
 
 
@@ -118,6 +126,7 @@ class SubscriptionSnapshot:
     site_count: int
     plugins: tuple[PluginDescriptor, ...]
     errors: tuple[str, ...] = ()
+    unresolved_sites: tuple[dict[str, Any], ...] = ()
 
     def public_metadata(self) -> dict[str, Any]:
         return {
@@ -266,23 +275,27 @@ class SubscriptionParser:
 
         plugins: list[PluginDescriptor] = []
         errors: list[str] = []
+        unresolved: list[dict[str, Any]] = []
         for index, site in enumerate(raw_sites):
             try:
-                descriptor = self._parse_site(index, site)
+                descriptor = self._parse_site(index, site, payload.get("spider"))
             except SubscriptionParseError as exc:
                 errors.append(f"site[{index}]: {exc}")
+                unresolved.append({"index": index, "reason": "invalid_descriptor"})
                 continue
-            if descriptor.plugin_type in {"raw_python", "secspider", "builtin"}:
-                plugins.append(descriptor)
+            plugins.append(descriptor)
 
         return SubscriptionSnapshot(
             source_id=source_id,
             site_count=len(raw_sites),
             plugins=tuple(plugins),
             errors=tuple(errors),
+            unresolved_sites=tuple(unresolved),
         )
 
-    def _parse_site(self, index: int, site: Any) -> PluginDescriptor:
+    def _parse_site(
+        self, index: int, site: Any, default_jar: Any = None
+    ) -> PluginDescriptor:
         if not isinstance(site, dict):
             raise SubscriptionParseError("site must be an object")
 
@@ -309,6 +322,18 @@ class SubscriptionParser:
         filter_entries = tuple(
             item for item in filters if isinstance(item, dict)
         )
+        native_client_site: dict[str, Any] = {}
+        if api == "csp_Push":
+            jar = site.get("jar") or default_jar
+            if isinstance(jar, str) and jar:
+                # FongMi routes external push actions by this fixed key.
+                native_client_site = {
+                    **site,
+                    "key": "push_agent",
+                    "type": 3,
+                    "api": "csp_Push",
+                    "jar": jar,
+                }
         return PluginDescriptor(
             plugin_id=plugin_id,
             name=name,
@@ -331,10 +356,11 @@ class SubscriptionParser:
                 key: site[key]
                 for key in (
                     "searchable", "quickSearch", "filterable", "categories",
-                    "style", "timeout", "playerType",
+                    "style", "timeout", "playerType", "indexs",
                 )
                 if key in site
             },
+            native_client_site=native_client_site,
         )
 
 

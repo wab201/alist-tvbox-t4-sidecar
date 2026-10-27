@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from sidecar import __version__
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,7 +14,7 @@ class Settings:
     """
 
     service_name: str = "t4-sidecar"
-    version: str = "0.1.0"
+    version: str = __version__
     worker_status: str = "not_started"
     worker_timeout: float = 15.0
     subscription_cache_ttl: float = 30.0
@@ -21,12 +22,14 @@ class Settings:
     upload_max_bytes: int = 2_000_000
     source_config_file: str | None = None
     subscription_url: str | None = None
+    log_file: str | None = None
+    compatibility_report: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
             service_name=os.getenv("T4_SERVICE_NAME", "t4-sidecar"),
-            version=os.getenv("T4_VERSION", "0.1.0"),
+            version=__version__,
             worker_status=os.getenv("T4_WORKER_STATUS", "not_started"),
             worker_timeout=float(os.getenv("T4_WORKER_TIMEOUT", "15")),
             subscription_cache_ttl=float(
@@ -36,4 +39,6 @@ class Settings:
             upload_max_bytes=int(os.getenv("T4_UPLOAD_MAX_BYTES", "2000000")),
             source_config_file=os.getenv("T4_SOURCES_FILE") or None,
             subscription_url=os.getenv("ALIST_TVBOX_SUBSCRIPTION_URL") or None,
+            log_file=os.getenv("T4_LOG_FILE") or None,
+            compatibility_report=os.getenv("T4_COMPATIBILITY_REPORT") or None,
         )

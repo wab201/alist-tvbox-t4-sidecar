@@ -10,6 +10,7 @@ class OpaqueValue:
     plugin_id: str
     kind: str
     value: str
+    trace: str = ""
 
 
 class OpaqueIdStore:
@@ -41,3 +42,7 @@ class OpaqueIdStore:
         ):
             return None
         return value.value
+
+    def origin_trace(self, token: str) -> str:
+        value = self._values.get(token)
+        return value.trace if value is not None else ""

@@ -1,5 +1,11 @@
 # NAS 部署指南
 
+`0.2.1` 修复版增加外置 HLS 音轨抽样、合法 ID3+TS 识别和第二轮任务收尾诊断。
+升级到包含该功能的镜像后，
+在 `/t4/` 页面点击“开始检测”即可检查全部订阅插件，不需要新增 Token。
+报告默认随现有 `/data` 卷保存，操作和验收边界见 [兼容门禁说明](COMPATIBILITY_GATE.md)。
+本文示例版本不代表当前 NAS 已完成升级。
+
 本文适用于群晖、威联通、绿联及其他支持 Docker Compose 的 NAS。部署目标是：在 NAS 上直接拉取 GHCR 镜像，通过环境变量读取 AT 订阅，把 Sidecar 暴露为独立的 T4 服务。
 
 ## 一、部署前准备
@@ -53,7 +59,7 @@ T4_SUBSCRIPTION_CACHE_TTL=30
 T4_PLUGIN_DIR=/data/plugins
 T4_UPLOAD_MAX_BYTES=2000000
 T4_SERVICE_NAME=t4-sidecar
-T4_VERSION=0.1.0
+T4_COMPATIBILITY_REPORT=/data/reports/compatibility-latest.json
 ```
 
 不要把真实 `.env` 上传到 GitHub、截图、工单或公开日志。
@@ -97,7 +103,7 @@ curl -fsS http://127.0.0.1:8765/t4/health
 预期返回包含：
 
 ```json
-{"status":"ok","version":"0.1.0"}
+{"status":"ok","version":"0.2.1"}
 ```
 
 从局域网访问：
@@ -160,7 +166,9 @@ Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 
 修改后在此页面强制重读订阅。不要删除 Docker volume，否则上传文件和名称、顺序都会丢失。
 保持 Compose 默认的单 Gateway 进程，不要让多个 Uvicorn worker 共同写入插件目录。
 
-页面会标注不能转成标准 T4 的本地能力或页面入口，例如 `csp_Push`、`csp_WebHome`。这类条目不会被当作可播放的标准 VOD 插件。
+页面中的 AT 推送标记为“原生推送”，复制按钮提供完整影视订阅，首页冒烟不可用。
+它通过原版 `type=3 + csp_Push + spring.jar` 运行，不是服务端 VOD 插件。
+WebHome 等页面入口仍标为非标准 T4，不导出为可播放站点。
 
 ### 访问范围
 
@@ -172,9 +180,9 @@ Python 插件可以继续使用 ATVP 常见的 `from base.spider import Spider` 
 | 状态 | 含义 | 处理 |
 | --- | --- | --- |
 | `400` | 缺少 `source` 或多插件订阅缺少 `site` | 先确认 source ID，再选择具体插件 |
-| `501` | 插件只有 AT 客户端本地能力，没有 AT 服务端 T4 路由 | 改用支持标准 T4 的插件 |
+| `501` | 请求了客户端专有能力，或片单导航不存在的详情/播放接口 | AT 推送导入完整订阅；片单卡片交由影视按标题搜片 |
 | `502` | AT 订阅、插件 loader 或上游站点失败 | 检查 AT 地址、订阅有效期和容器日志 |
-| `400` | 上传文件语法或插件合同不合格 | 使用包含 `Spider` 类的 `.py`，或使用 Sidecar JavaScript 导出合同 |
+| `400` | 上传文件语法、ZIP 结构或插件合同不合格 | 使用包含 `Spider` 类的 `.py`、Sidecar JavaScript，或包含 `main.py/main.js` 及配套文件的 ZIP |
 
 ## 六、在 T4 客户端中使用
 
@@ -253,10 +261,138 @@ docker compose up -d --no-deps --no-build --pull never t4-sidecar
 
 如果 AT 已经有反向代理，可以把 `/t4/` 转发到 NAS 的 `8765` 端口。这样客户端只需要访问同一域名下的 `/t4/`，但反向代理必须正确转发：
 
-- `Host`
+- `Host`，保留外部域名和端口
 - `X-Forwarded-For`
 - `X-Forwarded-Proto`
 - GET 和 POST 请求体
+
+### 地址填写和路径拼接
+
+Sidecar 的路由本身已经包含 `/t4` 前缀。反向代理的配置重点是：
+
+```text
+前端域名：<T4_DOMAIN>
+前端端口：<PUBLIC_PORT>
+后端地址：http://<NAS_IP>:8765
+访问路径：/t4/
+```
+
+推荐的请求链路如下：
+
+```text
+https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/
+        ↓
+http://<NAS_IP>:8765/t4/
+```
+
+健康检查、订阅和插件接口也必须保持同样的前缀：
+
+```text
+/t4/health
+/t4/config.json
+/t4/api/sources
+/t4/fm/{source}/{plugin}/
+```
+
+不要把 `http://<NAS_IP>:8765/t4` 作为后端地址，同时又让反代保留或追加客户端的 `/t4`。这种配置可能让首页通过路径替换打开，但页面脚本继续请求 `/t4/...` 时，被拼接成：
+
+```text
+客户端：/t4/api/sources
+错误后端：/t4/t4/api/sources
+结果：HTTP 404
+```
+
+这也是“管理台页面能打开，但右上角显示不可用、订阅和插件一直加载失败”的典型原因。
+
+如果需要从域名根路径 `/` 进入，可以仅配置一个重定向：
+
+```nginx
+location = / {
+    return 302 /t4/;
+}
+```
+
+随后仍由 `/t4/` 规则负责转发。不要通过“后端地址带 `/t4`”来代替这个重定向。
+
+通用 Nginx 示例：
+
+```nginx
+server {
+    listen 80;
+    server_name <T4_DOMAIN>;
+
+    location = / {
+        return 302 /t4/;
+    }
+
+    location /t4/ {
+        proxy_pass http://<NAS_IP>:8765/t4/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Lucky 或其他反代软件没有单独的“路径重写”选项时，使用“后端地址不带 `/t4` + 客户端访问 `/t4/`”的方式最简单。若软件支持“前缀转发”，要确认 `/t4/` 只被保留一次。
+
+### HTTPS 订阅能导入但切源失败
+
+公网通过 HTTPS 访问、后端通过 HTTP 转发是正常部署方式。反代需传入
+`X-Forwarded-Proto: https`，同时保留客户端 `Host` 中的域名和端口。
+Nginx 示例使用 `$http_host`，避免 `$host` 丢失非标准端口；
+Lucky 的“使用目标地址 Host 请求头”保持关闭，以保留公网 Host。
+
+Sidecar 使用请求的协议和 Host 自动生成订阅中的插件 API，不需要手工配置公网域名。
+Docker 镜像和 Compose 均默认设置 `FORWARDED_ALLOW_IPS=*`，让 Uvicorn 读取反代传入的协议头。
+如果使用自定义启动命令，应保留 Uvicorn 默认开启的代理头处理，不要添加 `--no-proxy-headers`。
+HTTPS 终止代理直接转发到 Sidecar 的 `8765` 端口即可。
+
+可用示例：
+
+```text
+订阅：https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/config.json
+api： https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/fm/env-at/csp_Media/
+```
+
+错误示例：
+
+```text
+订阅：https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/config.json
+api： http://<T4_DOMAIN>:<PUBLIC_PORT>/t4/fm/env-at/csp_Media/
+```
+
+后一种情况会向 HTTPS 端口发送明文 HTTP，可能直接断开连接。客户端可能显示
+`DioException`、`HttpException` 或 `statusCode: null`，而没有 HTTP 状态码。
+只检查订阅返回 `200` 不足以判断站点可用，还需核对并请求其中的 `api`。
+
+已部署旧镜像时，可在 Compose 的 `t4-sidecar.environment` 中加入以下一项，无需改动 AT 配置：
+
+```yaml
+FORWARDED_ALLOW_IPS: "*"
+```
+
+然后应用配置并重新创建 Sidecar：
+
+```bash
+docker compose config --quiet
+docker compose up -d --no-deps --no-build --pull never t4-sidecar
+```
+
+仅执行 `docker restart` 不会载入修改后的 Compose 环境变量。
+修正后通过公网 HTTPS 地址重新读取订阅，确认 type=4 站点的 `api` 使用相同的协议、域名和端口，
+再在影视中刷新点播配置。局域网 HTTP 直连仍可照常使用。
+
+反代调整后，在客户端或 NAS 上检查：
+
+```bash
+curl -i https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/health
+curl -i https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/api/sources
+curl -i https://<T4_DOMAIN>:<PUBLIC_PORT>/t4/config.json
+```
+
+如果直接访问 `http://<NAS_IP>:8765/t4/health` 正常，而公网地址返回 `404`，问题在反代路径规则；如果内网地址本身也返回 `404`，先重新创建或重启最新 Sidecar 容器。
 
 仓库提供了可选的 Nginx Compose profile。启用后，Sidecar 通过 NAS 的 `8766` 端口提供 `/t4/`：
 
@@ -327,12 +463,33 @@ env-at
 电视不能使用电脑的 `127.0.0.1` 或 `localhost`。页面通过局域网 IP 打开后，订阅中的站点 API
 会使用对应主机地址；反向代理应保留外部 Host，HTTPS 代理还需正确传递并信任转发协议。
 新增、删除、排序或改名插件后，在影视中刷新配置即可同步；站点 key 与名称和顺序无关。
-`csp_Push`、WebHome 等非服务端 VOD 能力不会进入 type=4 站点列表。
+片单导航自动保留首页推荐、分类筛选及 `indexs=1`：FongMi 点击标题搜索其他片源。
+忽略 `indexs` 的客户端请求片单详情时，Sidecar 检索其他源并汇总真实播放组，
+不会把豆瓣/TMDB 条目直接作为媒体播放。
+`csp_Push` 以原生 type=3 站点加入同一个订阅；WebHome 等页面入口仍不导出。
 
 逐插件“复制插件 API”生成的是站点 `api` 地址，不是完整点播订阅。该地址接收 `t`、`ids`、
 `wd`、`play` 等标准参数，并支持 URL-safe Base64 分类筛选及 GET、JSON POST、表单 POST。
 
 FM 地址只负责绑定插件，不携带 Sidecar 访问钥匙或 AT 订阅令牌。请使用电视可访问的 NAS 局域网地址。
+
+### AT 推送如何使用
+
+1. 升级 Sidecar 后，在影视中刷新 `/t4/config.json`。
+2. 在原版 AT 设备管理中选择已连接的影视设备，按原流程推送链接。
+3. 影视通过固定 `push_agent` 加载 AT 原版 `spring.jar`，继续使用原来的解析和网盘能力。
+
+不需要在 Sidecar 配置设备、Gateway Token 或额外推送地址。
+Web 中选择“原生推送”后复制的是完整订阅，不能将它作为单插件 type=4 API 使用。
+推送源默认可能不出现在普通选源列表中，保留原版 `changeable` 设置，不影响客户端按固定 key 处理推送。
+多个 AT source 只导出第一个可用推送站点，顺序由 source 配置决定。
+
+这项兼容需要影视支持 type=3 JAR，且影视设备能访问原 AT 地址。Sidecar 读取原订阅的 `jar/ext`，
+站点缺省 JAR 时自动采用全局 `spider`，不要求用户手工拼接。两者均缺失时不会生成伪造站点。
+原生推送所需的 AT `ext`（可能含上游授权）会原样交给客户端；它不会出现在管理页面或能力快照中。
+请勿公开分享完整订阅。纯 type=4 客户端不能替代原版推送运行时。
+
+当前自动化和真实 AT 接口验证不等同于已完成 Android/电视的设备推送、网盘播放或长播验收。
 
 ### API 返回订阅不可用或 `502`
 
@@ -347,6 +504,28 @@ FM 地址只负责绑定插件，不携带 Sidecar 访问钥匙或 AT 订阅令�
 ```bash
 docker compose logs --tail=200 t4-sidecar
 ```
+
+### 有详情和分集，但播放失败
+
+打开 Web 底部“播放链路诊断”，选择插件、输入片名后检查。
+勾选实时日志，在实际客户端复现，再导出脱敏日志；不需要配置其他 Token。
+每个响应的 `X-T4-Trace-ID` 可关联列表、详情、解析、AT/Worker 和媒体转发事件。
+
+Bilibili 未声明客户端身份时按普通视频请求 AT；不再默认声称客户端支持 DASH。
+AT 仍返回内嵌 DASH 时，Sidecar 提供 HTTP MPD 和音视频 Range 转发，不进行转码。
+反代必须转发整个 `/t4/`，包括 `/t4/media/`，保留 `Range`/`If-Range`。
+如果实际播放器不支持 DASH，应使用普通 MP4/HLS 路径；服务端探测通过并非真机解码证明。
+
+结构化日志保存于现有 `/data` 数据卷，默认文件为 `/data/logs/playback.jsonl`，
+单文件约 2 MB，轮转两份备份。可以通过 Web 导出，或在 NAS 查看：
+
+```bash
+docker compose exec t4-sidecar tail -n 200 /data/logs/playback.jsonl
+```
+
+日志只保存阶段、状态、耗时和关联 ID；不会保存 AT 订阅、Cookie、原始地址或插件 stderr 正文。
+普通直连媒体不会经过 Sidecar，只有诊断探测和 HTTP DASH 转发具有服务端媒体请求记录。
+新代码只有在构建并更新镜像后才会出现在 NAS，工作区测试不能当作 NAS 已升级。
 
 ### 修改 `.env` 后没有生效
 

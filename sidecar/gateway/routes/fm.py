@@ -9,11 +9,14 @@ from sidecar.at.subscription import SubscriptionParseError
 from sidecar.gateway.fm import translate_fm_request
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
+from sidecar.playback import PlaybackBridge
+from sidecar.worker.client import WorkerRemoteError
 
 
 def build_fm_router(
     source_registry: SourceRegistry,
     adapter: T4Adapter,
+    playback: PlaybackBridge | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -61,14 +64,18 @@ def build_fm_router(
             module = request.path_params.get("module")
             if module is None:
                 module, params = translate_fm_request(params)
-            return await adapter.dispatch(
+            result = await adapter.dispatch(
                 T4Request(
                     module=module,
                     source_id=source_id,
                     plugin_id=plugin_id,
                     params=params,
+                    proxy_base=str(request.base_url),
                 )
             )
+            if module == "play" and playback is not None:
+                result = playback.prepare(result, str(request.base_url))
+            return result
         except SubscriptionParseError as exc:
             raise HTTPException(
                 status_code=400,
@@ -82,6 +89,8 @@ def build_fm_router(
                     "message": str(exc),
                 },
             ) from exc
+        except WorkerRemoteError as exc:
+            raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=502,

@@ -8,11 +8,14 @@ from sidecar.at.subscription import SubscriptionParseError
 from sidecar.at.native import NativeAtUnsupportedError
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
+from sidecar.playback import PlaybackBridge
+from sidecar.worker.client import WorkerRemoteError
 
 
 def build_t4_router(
     source_registry: SourceRegistry,
     adapter: T4Adapter,
+    playback: PlaybackBridge | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -44,14 +47,18 @@ def build_t4_router(
             )
         plugin_id = str(params.pop("site", "") or params.pop("plugin", "") or "") or None
         try:
-            return await adapter.dispatch(
+            result = await adapter.dispatch(
                 T4Request(
                     module=module,
                     source_id=source_id,
                     plugin_id=plugin_id,
                     params=params,
+                    proxy_base=str(request.base_url),
                 )
             )
+            if module == "play" and playback is not None:
+                result = playback.prepare(result, str(request.base_url))
+            return result
         except SubscriptionParseError as exc:
             raise HTTPException(
                 status_code=400,
@@ -65,6 +72,8 @@ def build_t4_router(
                     "message": str(exc),
                 },
             ) from exc
+        except WorkerRemoteError as exc:
+            raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except Exception as exc:
             raise HTTPException(
                 status_code=502,

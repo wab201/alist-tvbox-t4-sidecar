@@ -24,16 +24,28 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert 'id="subscription-url"' in response.text
     assert "可直接添加到 FM 影视" not in response.text
     assert "fm_path" in response.text
+    assert "client_config_path" in response.text
+    assert "client_supported" in response.text
+    assert "（原生推送）" in response.text
+    assert "smoke.disabled = !plugin?.fm_path" in response.text
     assert "上传并注册" in response.text
+    assert 'accept=".py,.js,.zip"' in response.text
     assert "local-uploaded" in response.text
     assert "&t4_token=" not in response.text
     assert "sessionStorage" not in response.text
-    assert "secspider" not in response.text.lower()
+    assert "secspider" in response.text.lower()
+    assert 'id="gate-start"' in response.text
+    assert "/t4/api/compatibility/runs" in response.text
+    assert "抽样门禁通过" in response.text
     assert "刷新运行实例" in response.text
     assert "重命名" in response.text
     assert "plugin_ids" in response.text
     assert 'id="auth-panel"' not in response.text
     assert 'type="password"' not in response.text
+    assert 'id="diagnostic-keyword"' in response.text
+    assert 'id="trace-live"' in response.text
+    assert 'id="export-traces"' in response.text
+    assert "/t4/api/diagnostics/check" in response.text
 
 
 def test_web_icons_are_served_locally() -> None:

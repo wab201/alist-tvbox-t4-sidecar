@@ -51,6 +51,7 @@ def test_fm_route_injects_source_and_plugin_without_client_parameters() -> None:
             source_id="env-at",
             plugin_id="csp_BiliBili",
             params={},
+            proxy_base="http://testserver/",
         )
     ]
 

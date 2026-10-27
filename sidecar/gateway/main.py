@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+import httpx
 
 from sidecar.at.subscription import CachedSubscriptionResolver
 from sidecar.gateway.config import Settings
@@ -24,6 +25,13 @@ from sidecar.gateway.uploads import UploadedPluginStore
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter
 from sidecar.worker.client import WorkerConfig, WorkerPool
+from sidecar.diagnostics import TraceMiddleware, TraceStore
+from sidecar.playback import PlaybackBridge
+from sidecar.gateway.routes.diagnostics import build_diagnostics_router
+from sidecar.compatibility.runner import CompatibilityRunner
+from sidecar.gateway.routes.compatibility import build_compatibility_router
+from sidecar.gateway.routes.plugin_proxy import build_plugin_proxy_router
+from sidecar.plugin_proxy import PluginProxyRegistry
 
 
 def create_app(
@@ -33,6 +41,10 @@ def create_app(
     t4_adapter: T4Adapter | None = None,
 ) -> FastAPI:
     runtime_settings = settings or Settings.from_env()
+    trace_store = TraceStore(runtime_settings.log_file)
+    playback = PlaybackBridge()
+    proxies = PluginProxyRegistry()
+    proxy_client = httpx.Client(trust_env=False, timeout=httpx.Timeout(25, connect=3))
     if source_registry is not None:
         runtime_sources = source_registry
     else:
@@ -75,7 +87,7 @@ def create_app(
         native_client = NativeAtClient(timeout=runtime_settings.worker_timeout)
         runtime_adapter = T4Adapter(
             runtime_sources,
-            AtvpWorkerInvoker(worker_pool),
+            AtvpWorkerInvoker(worker_pool, proxies),
             subscription_fetcher=subscription_fetcher,
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,
@@ -83,17 +95,46 @@ def create_app(
         )
     else:
         runtime_adapter = t4_adapter
-    if worker_pool is not None:
-        @asynccontextmanager
-        async def lifespan(_app: FastAPI):
-            try:
-                yield
-            finally:
+    # Gate workers are isolated from interactive player sessions.
+    gate_pool = WorkerPool(WorkerConfig(request_timeout=runtime_settings.worker_timeout))
+    gate_invoker = AtvpWorkerInvoker(gate_pool, proxies)
+    gate_snapshots = {}
+
+    async def frozen_gate_snapshot(source):
+        return gate_snapshots.get(source.source_id) or await subscription_resolver.resolve(source)
+
+    gate_adapter = T4Adapter(
+        runtime_sources, gate_invoker,
+        subscription_resolver=frozen_gate_snapshot,
+        local_snapshot_provider=upload_store.snapshot_for,
+        native_invoker=NativeAtInvoker(native_client) if native_client is not None else None,
+    ) if t4_adapter is None else t4_adapter
+
+    async def gate_snapshot(source):
+        snapshot = upload_store.snapshot_for(source.source_id) or await subscription_resolver.refresh(source)
+        gate_snapshots[source.source_id] = snapshot
+        return snapshot
+
+    compatibility = CompatibilityRunner(
+        runtime_sources, gate_snapshot, gate_adapter, playback, trace_store,
+        report_path=runtime_settings.compatibility_report,
+        finish_runtime=gate_invoker.close,
+        release_plugin=gate_adapter.reset_plugin if isinstance(gate_adapter, T4Adapter) else None,
+        proxy_registry=proxies,
+    )
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            await compatibility.close()
+            if worker_pool is not None:
                 worker_pool.close()
-                if native_client is not None:
-                    native_client.close()
-    else:
-        lifespan = None
+            if native_client is not None:
+                native_client.close()
+            playback.close()
+            proxy_client.close()
+            trace_store.close()
 
     app = FastAPI(
         title="AList-TVBox T4 Sidecar",
@@ -102,6 +143,13 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+    app.state.traces = trace_store
+    app.state.playback = playback
+    app.state.compatibility = compatibility
+    app.include_router(build_plugin_proxy_router(proxies, proxy_client))
+    app.add_middleware(TraceMiddleware, store=trace_store)
+    app.include_router(build_diagnostics_router(trace_store, playback, runtime_adapter))
+    app.include_router(build_compatibility_router(compatibility))
     app.include_router(build_health_router(runtime_settings))
     app.include_router(build_sources_router(runtime_sources))
     app.include_router(
@@ -123,9 +171,9 @@ def create_app(
     app.include_router(
         build_uploads_router(runtime_settings, runtime_sources, upload_store, runtime_adapter)
     )
-    app.include_router(build_t4_router(runtime_sources, runtime_adapter))
+    app.include_router(build_t4_router(runtime_sources, runtime_adapter, playback))
     app.include_router(
-        build_fm_router(runtime_sources, runtime_adapter)
+        build_fm_router(runtime_sources, runtime_adapter, playback)
     )
     app.include_router(build_web_router())
     app.mount(

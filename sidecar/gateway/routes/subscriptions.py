@@ -48,7 +48,9 @@ def build_subscriptions_router(
             ) from exc
         metadata = snapshot.public_metadata()
         for plugin in metadata["plugins"]:
-            if plugin.get("t4_supported", True) is not False:
+            if plugin.get("client_supported"):
+                plugin["client_config_path"] = "/t4/config.json"
+            elif plugin.get("t4_supported", True) is not False:
                 plugin["fm_path"] = build_fm_path(
                     source_id,
                     str(plugin["id"]),

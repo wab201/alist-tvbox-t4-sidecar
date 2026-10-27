@@ -41,17 +41,25 @@ def build_client_config_router(
         sites = []
         seen = set()
         for plugin in snapshot.plugins:
+            if plugin.native_client_site:
+                sites.append(dict(plugin.native_client_site))
+                continue
             if plugin.public_metadata().get("t4_supported", True) is False:
                 continue
             key = build_site_key(source.source_id, plugin.plugin_id)
             if key in seen:
                 continue
             seen.add(key)
+            options = dict(plugin.site_options)
+            if plugin.api == "csp_PianDan":
+                options.update(
+                    indexs=1, searchable=0, quickSearch=0, filterable=1
+                )
             sites.append({
                 "searchable": 1,
                 "quickSearch": 1,
                 "filterable": 1,
-                **plugin.site_options,
+                **options,
                 "key": key,
                 "name": plugin.name,
                 "type": 4,
@@ -71,6 +79,13 @@ def build_client_config_router(
             sites_for(source, str(request.base_url).rstrip("/"))
             for source in source_registry.all()
         ))
-        return {"sites": [site for group in groups for site in group]}
+        sites = []
+        seen = set()
+        for group in groups:
+            for site in group:
+                if site["key"] not in seen:
+                    sites.append(site)
+                    seen.add(site["key"])
+        return {"sites": sites}
 
     return router

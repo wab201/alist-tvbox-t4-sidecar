@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import sys
 import time
@@ -8,6 +9,7 @@ import uuid
 from typing import Any
 
 from sidecar.worker.atvp_runtime import AtvpRuntime, AtvpRuntimeError
+from sidecar.worker.errors import failure_payload
 
 
 SESSION_ID = uuid.uuid4().hex
@@ -18,7 +20,7 @@ def _response(
     request_id: str,
     *,
     result: Any = None,
-    error: dict[str, str] | None = None,
+    error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": request_id,
@@ -74,11 +76,13 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
             extend = params.get("extend", "")
             if not isinstance(extend, str):
                 raise AtvpRuntimeError("Atvp extend must be a string")
-            return _response(request_id, result=ATVP_RUNTIME.init(extend))
-        except AtvpRuntimeError as exc:
+            site_key = str(params.get("site_key") or "")
+            result = ATVP_RUNTIME.init(extend, site_key=site_key) if site_key else ATVP_RUNTIME.init(extend)
+            return _response(request_id, result=result)
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_init_failed", "message": str(exc)},
+                error=failure_payload("plugin_init_failed", exc),
             )
     if method == "home":
         try:
@@ -86,10 +90,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                 request_id,
                 result=ATVP_RUNTIME.home(bool(params.get("filter", True))),
             )
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_home_failed", "message": str(exc)},
+                error=failure_payload("plugin_home_failed", exc),
             )
     if method == "category":
         try:
@@ -102,10 +106,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                     params.get("extend", ""),
                 ),
             )
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_category_failed", "message": str(exc)},
+                error=failure_payload("plugin_category_failed", exc),
             )
     if method == "detail":
         try:
@@ -113,10 +117,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
                 raise AtvpRuntimeError("detail ids must be a string list")
             return _response(request_id, result=ATVP_RUNTIME.detail(ids))
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_detail_failed", "message": str(exc)},
+                error=failure_payload("plugin_detail_failed", exc),
             )
     if method == "search":
         try:
@@ -128,10 +132,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                     str(params.get("pg", "1")),
                 ),
             )
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_search_failed", "message": str(exc)},
+                error=failure_payload("plugin_search_failed", exc),
             )
     if method == "play":
         try:
@@ -143,10 +147,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                     params.get("vip_flags", []),
                 ),
             )
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_play_failed", "message": str(exc)},
+                error=failure_payload("plugin_play_failed", exc),
             )
     if method == "action":
         try:
@@ -154,10 +158,10 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
                 request_id,
                 result=ATVP_RUNTIME.action(str(params.get("action", ""))),
             )
-        except AtvpRuntimeError as exc:
+        except Exception as exc:
             return _response(
                 request_id,
-                error={"code": "plugin_action_failed", "message": str(exc)},
+                error=failure_payload("plugin_action_failed", exc),
             )
     return _response(
         request_id,
@@ -165,28 +169,38 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def main() -> int:
+def _main(output) -> int:
     for line in sys.stdin:
+        request_id = ""
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("request must be an object")
+            if isinstance(request.get("id"), str):
+                request_id = request["id"]
             response = _handle(request)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             response = _response(
-                "",
-                error={"code": "invalid_request", "message": str(exc)},
+                request_id,
+                error=failure_payload("invalid_request", exc),
             )
         except Exception as exc:
             response = _response(
-                str(uuid.uuid4()),
-                error={"code": "worker_error", "message": str(exc)},
+                request_id,
+                error=failure_payload("worker_error", exc),
             )
         # Keep the pipe ASCII-only so the protocol is stable across Windows
         # code pages and Linux UTF-8 locales.
-        sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
-        sys.stdout.flush()
+        output.write(json.dumps(response, ensure_ascii=True) + "\n")
+        output.flush()
     return 0
+
+
+def main() -> int:
+    output = sys.stdout
+    # Host HTTP handlers and plugin background threads must never write to the RPC pipe.
+    with contextlib.redirect_stdout(sys.stderr):
+        return _main(output)
 
 
 if __name__ == "__main__":
