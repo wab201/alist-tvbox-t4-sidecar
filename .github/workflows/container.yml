@@ -22,6 +22,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Prepare container runtime directories
+        run: |
+          sudo mkdir -p /data/plugins /data/logs /data/reports
+          sudo chown -R "$(id -u):$(id -g)" /data
+
       - name: Verify Linux runtime and tests
         env:
           # The hosted runner has no container /data volume. Keep CI state
