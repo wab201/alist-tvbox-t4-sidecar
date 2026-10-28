@@ -19,7 +19,30 @@
 `parse=0`、HTTP 直链及 Referer/User-Agent 保持；两集首中尾 Range 全部 206，去头均 403。
 本地 18 个内置条目为 2 通过、7 失败、4 受阻、5 不适用；我的云盘和 AList
 仍有图片 HTTP 418，不能以本修复宣称整插件或全部订阅通过。截图四集网络抽样通过。
-镜像与 NAS 发布证据验收后追加在本节，FM 真机长播及当前版本全订阅仍未验收。
+FM 真机长播及当前版本全订阅仍未验收。
+
+### 发布与 NAS 核验
+
+- 运行源码：`bb19317af4b469d3bb4a6be66549e3f48266929a`；
+  GitHub Actions `40631058673` 成功，Linux `391 passed, 1 skipped, 1 warning`。
+- 镜像：`ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-bb19317`；
+  GHCR digest：`sha256:e77b35bb385797f9c5e398bcfc96b9b3b20bb98fed857c0d688d322675b6aac7`。
+- NAS 镜像 ID：`sha256:8af0906157a4e86f9f7caee53c3a1493d5eb94bc2bee68d5b29a77a130222995`；
+  归档 SHA256：`1c5417207bc0a69a63f7df85e96bbd9dd167cbcd9350d199f97fdc0f568469ff`。
+- 备份 `pre-bb19317-1793161038` 后仅替换 Sidecar，容器 `healthy`；
+  AT 容器、数据卷、端口和既有插件配置不变。
+- NAS 首两集 24 次真实取链全部 200，36 个详情/播放请求均有成功完成日志；
+  直链和两个必要请求头保留，首中尾 206、去头 403。未执行解码。
+- Web、健康、统一订阅通过；173 个站点（172 T4 + 1 原生推送），178 个 AT 条目解析无错误；
+  B站首页/分类/详情/取链通过。隔离 PY/JS 三种传输 36 请求及管理持久化通过。
+- 55 个运行文件匹配发布提交，14 项依赖就绪，生产容器无 FFmpeg/FFprobe。
+- NAS 18 个内置条目抽样：1 通过、7 失败、5 受阻、5 不适用；我的云盘及 AList
+  图片 HTTP 418 仍失败。B站本轮指定片名搜索为空而受阻，详情/图片/取链/媒体通过，
+  不改写本地 2 通过的独立报告。截图四集首中尾 Range 全部通过。
+
+脱敏验收报告保存在被 Git 忽略的 `tests/reports/release/`：
+`nas-deployment-bb19317.json`、`nas-verification-bb19317.json` 和
+`nas-vod-bb19317-1793161179708868100.json`，不发布私有地址、签名或请求头值。
 
 ## 0.2.2 · 2026-10-28
 
