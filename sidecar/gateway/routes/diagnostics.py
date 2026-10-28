@@ -57,7 +57,7 @@ def build_diagnostics_router(
             if not listing.get("list"):
                 return {"ok": False, "stage": stage, "reason": "no_results", "trace_id": trace_id()}
             stage = "detail"
-            detail = await call("detail", {"ids": listing["list"][0]["vod_id"]})
+            detail = await call("detail", {"ac": "detail", "ids": listing["list"][0]["vod_id"]})
             vod = next(iter(detail.get("list") or []), {})
             groups = str(vod.get("vod_play_url") or "").split("$$$")
             flags = str(vod.get("vod_play_from") or "").split("$$$")

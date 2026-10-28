@@ -461,7 +461,7 @@ class CompatibilityRunner:
             for stage in ("image", "play", "media"):
                 stages[stage] = {"status": "blocked", "reason": "no_detail_sample"}
             return
-        detail = await call("detail", {"ids": selected["vod_id"]})
+        detail = await call("detail", {"ac": "detail", "ids": selected["vod_id"]})
         if navigation:
             stages["detail"]["navigation"] = navigation
         detail_cards = cards(detail)

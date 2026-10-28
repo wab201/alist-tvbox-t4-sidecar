@@ -18,11 +18,16 @@
 python -m scripts.check_compatibility --report tests/reports/compatibility-latest.json
 python -m scripts.check_compatibility --source env-at --concurrency 2 --categories 3 --lines 6
 python -m scripts.verify_builtin_playback --keyword "影片名" --report tests/reports/builtin.json
+python -m scripts.verify_builtin_playback --keyword "影片名" --transport JSON --screenshot-only --report tests/reports/builtin-json.json
+python -m scripts.verify_builtin_playback --keyword "影片名" --transport FORM --screenshot-only --report tests/reports/builtin-form.json
 ```
 
 内置源专项工具通过真实 HTTP 出口检查全部内置条目，并单独检查指定影片首两集的首、中、尾
 Range 与去掉请求头后的差异；页面入口和原生推送明确列为不适用。显式关键词优先使用搜索卡片，
 不代表其他首页或分类失败可以忽略。
+`0.2.3` 起专项使用 FM 单地址参数入口，详情携带 `ac=detail&ids=...`，
+并在报告记录请求合同和 GET/JSON/FORM。内部门禁、播放诊断也携带相同详情控制参数。
+历史只传 `ids` 的结果漏测了 `/vod` 参数冲突，不能用作这一客户端问题的通过证据。
 开发机有 FFprobe/FFmpeg 时可增加 `--decode` 获取编码和三秒解码证据；仅创建临时本地测试服务，
 不将签名地址放进命令行，不把工具安装到生产容器，也不改变生产媒体的编码、封装或交付路径。
 

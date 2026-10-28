@@ -142,31 +142,44 @@ def developer_decode(payload, base, app):
     }
 
 
+class BuiltinHttpAdapter:
+    def __init__(self, http, transport):
+        self.http = http
+        self.transport = transport
+
+    async def dispatch(self, request):
+        path = f"/t4/fm/{request.source_id}/{request.plugin_id}/"
+        params = dict(request.params)
+        if request.module == "detail":
+            params["ac"] = "detail"
+        if self.transport == "GET":
+            response = await self.http.get(path, params=params)
+        elif self.transport == "JSON":
+            response = await self.http.post(path, json=params)
+        else:
+            response = await self.http.post(path, data=params)
+        if response.status_code != 200:
+            body = response.json().get("detail", {})
+            code = body.get("code", "http_error") if isinstance(body, dict) else "http_error"
+            raise WorkerRemoteError(code, "redacted", {})
+        return response.json()
+
+
 async def verify(base, args, app=None):
     source = SourceConfig("env-at", "authorized", subscription_url=os.environ["ALIST_TVBOX_SUBSCRIPTION_URL"])
     snapshot = await resolve_subscription(source)
     assert not snapshot.errors
     identity = artifact_identity()
+    transport = getattr(args, "transport", "GET")
     report = {
         "artifact": identity, "scope": "all_builtin_sources_sampled",
+        "http_contract": "fm_query_parameters", "transport": transport,
         "site_count": snapshot.site_count, "plugins": [], "screenshot_samples": [],
         "real_device_verified": False, "long_play_verified": False,
         "started_at": time.time(),
     }
     async with httpx.AsyncClient(base_url=base, trust_env=False, timeout=65) as http:
-        class HttpAdapter:
-            async def dispatch(self, request):
-                response = await http.get(
-                    f"/t4/fm/{request.source_id}/{request.plugin_id}/api/{request.module}",
-                    params=request.params,
-                )
-                if response.status_code != 200:
-                    body = response.json().get("detail", {})
-                    code = body.get("code", "http_error") if isinstance(body, dict) else "http_error"
-                    raise WorkerRemoteError(code, "redacted", {})
-                return response.json()
-
-        adapter = HttpAdapter()
+        adapter = BuiltinHttpAdapter(http, transport)
         bridge, traces = PlaybackBridge(), TraceStore()
         runner = CompatibilityRunner(SourceRegistry((source,)), None, adapter, bridge, traces)
         network = httpx.Client(timeout=20, follow_redirects=True)
@@ -208,7 +221,7 @@ async def verify(base, args, app=None):
                         return await adapter.dispatch(T4Request(module, "env-at", plugin.plugin_id, params))
                     search = await call("search", {"wd": args.keyword, "quick": False})
                     card = next(v for v in search.get("list", []) if v.get("vod_name") == args.keyword)
-                    detail = (await call("detail", {"ids": card["vod_id"]}))["list"][0]
+                    detail = (await call("detail", {"ac": "detail", "ids": card["vod_id"]}))["list"][0]
                     flag = detail["vod_play_from"].split("$$$")[0]
                     entries = detail["vod_play_url"].split("$$$")[0].split("#")[:2]
                     for index, entry in enumerate(entries):
@@ -248,6 +261,7 @@ def main():
     parser.add_argument("--keyword", default="")
     parser.add_argument("--decode", action="store_true")
     parser.add_argument("--screenshot-only", action="store_true")
+    parser.add_argument("--transport", choices=("GET", "JSON", "FORM"), default="GET")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.decode and args.base_url:

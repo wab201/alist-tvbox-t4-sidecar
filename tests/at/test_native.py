@@ -167,6 +167,25 @@ def test_native_category_for_vod_preserves_filters_and_pagination() -> None:
     assert params["type"] == "0"
 
 
+@pytest.mark.parametrize("api", ["csp_Emby", "csp_BiliBili", "csp_TgWeb"])
+def test_vod_ac_fix_does_not_strip_other_backends_detail_parameters(api):
+    seen = []
+    client = NativeAtClient(transport=httpx.MockTransport(
+        lambda request: (seen.append(request) or httpx.Response(200, json={"list": []}))
+    ))
+    try:
+        client.call(builtin(api), "detail", {
+            "ids": ["fixture"], "ac": "quark", "depth": "2", "title": "Fixture",
+        })
+    finally:
+        client.close()
+    assert seen[0].url.params["ac"] == "quark"
+    if api == "csp_TgWeb":
+        assert seen[0].url.params["title"] == "Fixture"
+    else:
+        assert seen[0].url.params["depth"] == "2"
+
+
 @pytest.mark.parametrize("method,params", [
     ("home", {}), ("category", {"tid": "all"}), ("search", {"key": "sample"}),
 ])

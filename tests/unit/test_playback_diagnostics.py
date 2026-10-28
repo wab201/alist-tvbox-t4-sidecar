@@ -139,6 +139,8 @@ def test_diagnostics_checks_audio_and_video_without_claiming_device_success(tmp_
         def call(self, runtime_key, plugin, method, params):
             if method == "search":
                 return {"list": [{"vod_id": "movie", "vod_name": "Demo"}]}
+            if method == "detail":
+                assert params["ac"] == "detail"
             return super().call(runtime_key, plugin, method, params)
 
     # Rebuild with a searchable fixture; no network or live plugin is changed.

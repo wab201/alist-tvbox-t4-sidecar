@@ -106,6 +106,7 @@ def test_complete_chain_is_read_only_version_bound_and_redacted(tmp_path):
         calls = runner.adapter.calls
         assert [request.module for request in calls] == ["home", "category", "search", "detail", "play"]
         assert calls[-2].params["ids"] == CARD["vod_id"]
+        assert calls[-2].params["ac"] == "detail"
         assert not any(request.module == "action" for request in calls)
         assert result["plugins"][0]["stages"]["media"]["lines"][0]["status"] == "pass"
         report = (tmp_path / "latest.json").read_text()

@@ -212,6 +212,9 @@ class NativeAtClient:
                 return query
             query = {"ids": ",".join(values)}
             for key in ("ac", "depth"):
+                # /vod's ac changes playback IDs into proxy URLs, not T4 actions.
+                if route == "/vod" and key == "ac":
+                    continue
                 if params.get(key) not in (None, ""):
                     query[key] = str(params[key])
             if route == "/live" and params.get("platform") not in (None, ""):
