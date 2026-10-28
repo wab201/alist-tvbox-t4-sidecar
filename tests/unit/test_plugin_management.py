@@ -189,7 +189,11 @@ def test_fm_six_method_contract_after_management(tmp_path, filename, content, me
         assert call("search", wd="demo", pg="3")["page"] == 3
         detail = call("detail", ids=home["list"][0]["vod_id"])
         play_id = detail["list"][0]["vod_play_url"].split("$", 1)[1]
-        assert call("play", flag="Uploaded", play=play_id)["url"].startswith("https://")
+        play = call("play", flag="Uploaded", play=play_id)
+        assert play["url"].startswith("http://testserver/t4/media/")
+        assert play["parse"] == play["jx"] == 0 and play["header"] == {}
+        asset = client.app.state.playback.get(play["url"].rsplit("/", 1)[-1])
+        assert asset.kind == "hls" and asset.url.startswith("https://")
         assert call("action", action="inspect")["action"] == "inspect"
 
 

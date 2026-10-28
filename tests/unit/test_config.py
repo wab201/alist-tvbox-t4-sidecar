@@ -1,11 +1,12 @@
 from sidecar.gateway.config import Settings
+from sidecar import __version__
 
 
 def test_default_settings_are_local_and_non_running() -> None:
     settings = Settings()
 
     assert settings.service_name == "t4-sidecar"
-    assert settings.version == "0.2.1"
+    assert settings.version == __version__
     assert settings.worker_status == "not_started"
     assert settings.worker_timeout == 15.0
 
@@ -23,7 +24,7 @@ def test_settings_read_public_environment_overrides(monkeypatch) -> None:
 
     assert settings == Settings(
         service_name="custom-sidecar",
-        version="0.2.1",
+        version=__version__,
         worker_status="ready",
         worker_timeout=3.5,
     )

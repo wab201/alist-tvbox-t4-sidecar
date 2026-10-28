@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 
 from sidecar.at.native import NativeAtClient, NativeAtUnsupportedError
 from sidecar.at.subscription import PluginDescriptor
@@ -163,6 +164,25 @@ def test_native_category_for_vod_preserves_filters_and_pagination() -> None:
     assert params["sort"] == "desc"
     assert params["size"] == "30"
     assert params["depth"] == "1"
+    assert params["type"] == "0"
+
+
+@pytest.mark.parametrize("method,params", [
+    ("home", {}), ("category", {"tid": "all"}), ("search", {"key": "sample"}),
+])
+def test_alist_and_xiaoya_keep_distinct_vod_types(method, params):
+    seen = []
+    client = NativeAtClient(transport=httpx.MockTransport(
+        lambda request: (seen.append(request) or httpx.Response(200, json={"list": []}))
+    ))
+    try:
+        client.call(builtin("csp_AList"), method, params)
+        client.call(builtin("csp_XiaoYa"), method, params)
+    finally:
+        client.close()
+    assert seen[0].url.path == seen[1].url.path == "/vod/native-token"
+    assert seen[0].url.params["type"] == "0"
+    assert "type" not in seen[1].url.params
 
 
 def test_native_pansou_uses_original_home_and_detail_parameter_names() -> None:
@@ -274,6 +294,34 @@ def test_native_live_play_uses_the_original_live_play_route() -> None:
     assert result["url"].endswith(".m3u8")
     assert seen[0].url.path.endswith("/live-play/native-token")
     assert seen[0].url.params["id"] == "live-1"
+
+
+@pytest.mark.parametrize("url", [
+    "https://live.example/stream.flv?sign=fixture",
+    "https://at.example/p/native-token/0@123",
+])
+def test_live_detail_stream_is_delivered_without_calling_placeholder(url):
+    def unexpected(_):
+        raise AssertionError("a published live stream must not call /live-play")
+    client = NativeAtClient(transport=httpx.MockTransport(unexpected))
+    try:
+        assert client.call(builtin("csp_Live"), "play", {"id": url}) == {
+            "parse": 0, "jx": 0, "url": url, "header": {},
+        }
+    finally:
+        client.close()
+
+
+def test_live_detail_preserves_platform_parameter():
+    seen = []
+    client = NativeAtClient(transport=httpx.MockTransport(
+        lambda request: (seen.append(request) or httpx.Response(200, json={"list": []}))
+    ))
+    try:
+        client.call(builtin("csp_Live"), "detail", {"ids": ["bili$1"], "platform": "web"})
+        assert seen[0].url.params["platform"] == "web"
+    finally:
+        client.close()
 
 
 def test_native_client_rejects_client_local_builtin_without_server_route() -> None:

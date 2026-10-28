@@ -127,7 +127,9 @@ def test_python_upload_is_registered_as_local_source(tmp_path) -> None:
             },
         )
         assert play.status_code == 200
-        assert play.json()["url"].endswith("upload.m3u8")
+        target = play.json()["url"]
+        assert target.startswith("http://testserver/t4/media/")
+        assert client.app.state.playback.get(target.rsplit("/", 1)[-1]).url.endswith("upload.m3u8")
 
         action = client.post(
             "/t4/api/action",
@@ -220,7 +222,9 @@ def test_javascript_upload_is_registered_and_executable(tmp_path) -> None:
             },
         )
         assert play.status_code == 200
-        assert play.json()["url"].endswith("js.m3u8")
+        target = play.json()["url"]
+        assert target.startswith("http://testserver/t4/media/")
+        assert client.app.state.playback.get(target.rsplit("/", 1)[-1]).url.endswith("js.m3u8")
 
         action = client.post(
             "/t4/api/action",

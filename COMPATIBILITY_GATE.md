@@ -17,7 +17,14 @@
 ```powershell
 python -m scripts.check_compatibility --report tests/reports/compatibility-latest.json
 python -m scripts.check_compatibility --source env-at --concurrency 2 --categories 3 --lines 6
+python -m scripts.verify_builtin_playback --keyword "影片名" --report tests/reports/builtin.json
 ```
+
+内置源专项工具通过真实 HTTP 出口检查全部内置条目，并单独检查指定影片首两集的首、中、尾
+Range 与去掉请求头后的差异；页面入口和原生推送明确列为不适用。显式关键词优先使用搜索卡片，
+不代表其他首页或分类失败可以忽略。
+开发机有 FFprobe/FFmpeg 时可增加 `--decode` 获取编码和三秒解码证据；仅创建临时本地测试服务，
+不将签名地址放进命令行，不把工具安装到生产容器，也不改变生产媒体的编码、封装或交付路径。
 
 使用已有环境配置，包括 `ALIST_TVBOX_SUBSCRIPTION_URL`、`T4_SOURCES_FILE`、
 `T4_PLUGIN_DIR`。不把真实订阅地址写进命令参数或报告。退出码：
@@ -79,7 +86,10 @@ HLS 主清单若声明外置音轨，会选择默认音轨并独立抽样其清�
 此证据不是整段填充校验、连续解码、全清晰度验证或 DRM 解密。
 SAMPLE-AES/非 identity KEYFORMAT 和加密字节范围分片继续明确受阻。
 具有合法 ID3 定时元数据前缀的 TS 只在 ID3 长度、TS 同步字节和 188 字节边界均成立时通过；
-其他非标准 PNG 等封装分片不会仅因“看起来可能有视频”就当作通过。
+其他非标准封装分片不会仅因“看起来可能有视频”就当作通过。
+`0.2.2` 对已确认的 PNG/TS 包装调用与真实媒体出口相同的结构校验和流式去头，
+不是仅检测器去头。加密、BYTERANGE 和非法包装不走去头路径。
+服务端网页解析也走同一播放准备流程；无法提取声明式媒体则受阻，非法 DASH 等输入仍失败。
 
 ## 抽样范围
 
@@ -92,7 +102,8 @@ SAMPLE-AES/非 identity KEYFORMAT 和加密字节范围分片继续明确受阻�
   只调用现有 home/category/search/detail/play 入口，不调用 action。
 - 插件自身是受信任代码；若其读入口内部有副作用，本检查器无法替插件保证无副作用。
 - 只验证一个 HLS 变体及一份详情，不对所有影片、分页、筛选组合、清晰度或字幕作全面可用性承诺。
-- 未执行服务器解码、长播或真机播放。媒体字节可达不等于客户端解码通过。
+- 自动门禁不执行服务器解码、长播或真机播放。媒体字节可达不等于客户端解码通过。
+  开发环境另有真实线路的短时解码报告，不自动提升门禁或真机证据等级。生产服务不解码媒体。
 
 ## 判定
 

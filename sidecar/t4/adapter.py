@@ -356,6 +356,7 @@ class T4Adapter:
                 "ac": params.get("ac"),
                 "depth": params.get("depth"),
                 "title": params.get("title"),
+                "platform": params.get("platform"),
                 "client": str(params.get("client") or ""),
             }
         if module == "play":

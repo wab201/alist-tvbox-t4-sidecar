@@ -164,6 +164,9 @@ class PluginHost:
                         handler.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                     else:
                         handler.wfile.write(chunk)
+                if hasattr(body, "close"):
+                    body.close()
+                    body = None
                 if chunked:
                     handler.wfile.write(b"0\r\n\r\n")
         except (BrokenPipeError, ConnectionResetError):

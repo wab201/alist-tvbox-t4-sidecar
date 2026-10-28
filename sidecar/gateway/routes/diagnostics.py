@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from sidecar.diagnostics import TraceStore, record, trace_id
-from sidecar.playback import PlaybackBridge
+from sidecar.playback import PlaybackBridge, PlaybackError
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.worker.client import WorkerRemoteError
 
@@ -65,16 +65,16 @@ def build_diagnostics_router(
                 (flag, entry.partition("$")[2])
                 for flag, group in zip(flags, groups) for entry in group.split("#")
                 if entry.partition("$")[2]
-                and flag.casefold() not in {"操作", "互动", "actions"}
+                and flag.casefold() not in {"操作", "互动", "关注", "未开播", "已下播", "actions", "follow"}
                 and not entry.partition("$")[0].startswith((
-                    "检查", "刷新", "删除", "清空", "点赞", "投币", "收藏", "取消", "互动状态",
+                    "检查", "刷新", "删除", "清空", "点赞", "投币", "收藏", "取消", "互动状态", "关注",
                 ))
             ), None)
             if selected is None:
                 return {"ok": False, "stage": stage, "reason": "no_episodes", "trace_id": trace_id()}
             stage = "play"
             payload = await call("play", {"play": selected[1], "flag": selected[0]})
-            payload = bridge.prepare(payload, str(request.base_url))
+            payload = await asyncio.to_thread(bridge.prepare, payload, str(request.base_url))
             stage = "media"
             result = await asyncio.to_thread(bridge.probe, payload)
             return {**result, "trace_id": trace_id()}
@@ -92,6 +92,18 @@ def build_diagnostics_router(
         if asset is None:
             record("media.expired", status=410)
             raise HTTPException(410, "播放清单已过期，请重新打开详情并播放")
+        if asset.kind == "hls":
+            try:
+                content = await asyncio.to_thread(bridge.render_hls, key, asset, str(request.base_url))
+            except (PlaybackError, httpx.HTTPError) as exc:
+                record("media.hls_failed", parent_trace=asset.trace, error=type(exc).__name__)
+                raise HTTPException(502, detail={"code": "hls_delivery_failed",
+                                               "message": "服务端 HLS 清单处理失败"}) from exc
+            return Response(
+                b"" if request.method == "HEAD" else content,
+                media_type="application/vnd.apple.mpegurl",
+                headers={"Cache-Control": "no-store", "Content-Length": str(len(content))},
+            )
         if asset.content is not None:
             record("media.manifest", parent_trace=asset.trace, bytes=len(asset.content))
             return Response(
@@ -100,21 +112,12 @@ def build_diagnostics_router(
                     "Cache-Control": "no-store", "Content-Length": str(len(asset.content)),
                 },
             )
-        headers = dict(asset.headers)
-        headers["Accept-Encoding"] = "identity"
-        if request.headers.get("range"):
-            headers["Range"] = request.headers["range"]
-        for name in ("if-range",):
-            if request.headers.get(name):
-                headers[name] = request.headers[name]
         start = time.monotonic()
         try:
             upstream = await asyncio.to_thread(
-                bridge.client.send,
-                bridge.client.build_request(request.method, asset.url, headers=headers),
-                stream=True,
+                bridge.open_media, asset, request.method, dict(request.headers),
             )
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, PlaybackError) as exc:
             record("media.failed", parent_trace=asset.trace, error=type(exc).__name__)
             raise HTTPException(502, "媒体上游连接失败，请查看链路日志") from exc
         response_headers = {

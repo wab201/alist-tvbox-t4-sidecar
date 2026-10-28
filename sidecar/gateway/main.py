@@ -42,8 +42,8 @@ def create_app(
 ) -> FastAPI:
     runtime_settings = settings or Settings.from_env()
     trace_store = TraceStore(runtime_settings.log_file)
-    playback = PlaybackBridge()
     proxies = PluginProxyRegistry()
+    playback = PlaybackBridge(proxy_registry=proxies)
     proxy_client = httpx.Client(trust_env=False, timeout=httpx.Timeout(25, connect=3))
     if source_registry is not None:
         runtime_sources = source_registry

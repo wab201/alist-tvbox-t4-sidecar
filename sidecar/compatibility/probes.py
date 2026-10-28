@@ -5,6 +5,7 @@ import io
 import re
 import time
 import warnings
+from contextlib import closing
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -14,7 +15,7 @@ from lxml import etree
 import m3u8
 from PIL import Image, UnidentifiedImageError
 
-from sidecar.playback import PlaybackBridge
+from sidecar.playback import PlaybackBridge, PlaybackError
 
 
 def image_kind(data: bytes) -> str:
@@ -122,6 +123,26 @@ class ResourceProbes:
         path = urlsplit(url).path
         asset = self.bridge.get(path.rsplit("/", 1)[-1]) if path.startswith("/t4/media/") else None
         if asset is not None:
+            try:
+                if asset.kind == "hls":
+                    content = self.bridge.render_hls(
+                        path.rsplit("/", 1)[-1], asset, urlsplit(url)._replace(path="", query="", fragment="").geturl(),
+                    )
+                    return content, {"content-type": asset.mime}, url, 200
+                if asset.kind == "segment":
+                    with closing(self.bridge.open_media(asset, "GET", {
+                        "range": f"bytes={start}-{start + limit - 1}",
+                    })) as response:
+                        if response.status_code not in {200, 206}:
+                            raise ProbeFailure("http_status", http_status=response.status_code)
+                        data = bytearray()
+                        for chunk in response.iter_bytes(min(limit, 16384)):
+                            data.extend(chunk[:limit - len(data)])
+                            if len(data) >= limit:
+                                break
+                        return bytes(data), dict(response.headers), url, response.status_code
+            except (PlaybackError, httpx.HTTPError) as exc:
+                raise ProbeFailure("media_delivery_failed", error=type(exc).__name__) from exc
             if asset.content is not None:
                 return asset.content[:limit], {"content-type": asset.mime}, url, 200
             return self._fetch(asset.url, asset.headers, limit=limit, start=start)

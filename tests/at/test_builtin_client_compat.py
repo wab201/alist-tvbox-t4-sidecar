@@ -25,6 +25,46 @@ PUSH = {
 }
 
 
+@pytest.mark.parametrize("transport", ["GET", "JSON", "FORM"])
+@pytest.mark.parametrize("module_path", [False, True])
+def test_live_direct_stream_survives_opaque_ids_and_all_transports(tmp_path, transport, module_path):
+    target = "https://live.example/channel.flv?signature=fixture"
+    async def live_subscription(_):
+        return {"sites": [{"key": "live", "api": "csp_Live",
+                           "ext": {"api": AT, "token": "original-token"}}]}
+    seen = []
+    def handler(request):
+        seen.append(request)
+        assert request.url.path == "/live/original-token"
+        assert "ids" in request.url.params
+        return httpx.Response(200, json={"list": [{
+            "vod_id": "huya$fixture", "vod_name": "Fixture",
+            "vod_play_from": "HD", "vod_play_url": "HD$" + target,
+        }]})
+    registry = SourceRegistry((source(),))
+    native = NativeAtClient(transport=httpx.MockTransport(handler))
+    adapter = T4Adapter(registry, FakeWorker(), subscription_fetcher=live_subscription,
+                        native_invoker=NativeAtInvoker(native))
+    app = create_app(Settings(plugin_dir=str(tmp_path)), registry,
+                     subscription_fetcher=live_subscription, t4_adapter=adapter)
+    try:
+        with TestClient(app) as client:
+            detail = client.get("/t4/fm/at/live/", params={"ids": "huya$fixture"}).json()["list"][0]
+            value = detail["vod_play_url"].partition("$")[2]
+            assert value != target and value.startswith("t4_")
+            path = "/t4/fm/at/live/" + ("api/play" if module_path else "")
+            params = {"play": value, "flag": "HD"}
+            response = client.get(path, params=params) if transport == "GET" else (
+                client.post(path, json=params) if transport == "JSON" else client.post(path, data=params)
+            )
+            assert response.status_code == 200
+            assert response.json()["url"] == target
+            assert response.json()["parse"] == response.json()["jx"] == 0
+            assert len(seen) == 1
+    finally:
+        native.close()
+
+
 def source(source_id="at"):
     return SourceConfig(source_id, "AT", subscription_url=f"{AT}/sub/fixture/1")
 
@@ -377,7 +417,10 @@ def test_piandan_non_index_client_searches_then_delegates_real_playback(tmp_path
             play_id = vod["vod_play_url"].partition("$")[2]
             play = call({"play": play_id, "flag": vod["vod_play_from"]})
             assert play.status_code == 200
-            assert play.json()["url"] == "https://video.invalid/demo.m3u8"
+            target = play.json()["url"]
+            assert target.startswith("http://testserver/t4/media/")
+            assert play.json()["parse"] == play.json()["jx"] == 0
+            assert client.app.state.playback.get(target.rsplit("/", 1)[-1]).url == "https://video.invalid/demo.m3u8"
             assert calls[-1][0] == "vod-demo"
             assert calls[-1][2]["id"] == "raw-play-id"
             stages = [event["stage"] for event in app_events(client)]

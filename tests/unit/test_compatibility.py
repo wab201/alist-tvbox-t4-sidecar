@@ -98,7 +98,8 @@ def test_complete_chain_is_read_only_version_bound_and_redacted(tmp_path):
         assert result["state"] == "completed"
         assert result["gate"]["passed"] is True
         assert result["progress"] == {"total": 1, "completed": 1}
-        assert result["artifact"]["version"] == "0.2.1"
+        from sidecar import __version__
+        assert result["artifact"]["version"] == __version__
         assert result["artifact_current"] is True
         assert result["real_device_verified"] is result["long_play_verified"] is False
         assert result["remote_plugin_source_verified"] is False
@@ -113,6 +114,31 @@ def test_complete_chain_is_read_only_version_bound_and_redacted(tmp_path):
     finally:
         runner.probes.close()
         bridge.close()
+
+
+def test_explicit_search_sample_is_not_replaced_by_unrelated_home_folder(tmp_path):
+    def hook(request):
+        if request.module in {"home", "category"}:
+            return {"class": [{"type_id": "1", "type_name": "Folders"}], "list": [{
+                **CARD, "vod_id": "unrelated-folder", "vod_tag": "folder",
+            }]}
+    adapter = Adapter(hook)
+    runner, bridge = runner_for(tmp_path, adapter=adapter)
+    try:
+        result = run_once(runner, CheckOptions(keyword="Private title"))
+        assert result["plugins"][0]["stages"]["detail"]["status"] == "pass"
+        assert next(r for r in adapter.calls if r.module == "detail").params["ids"] == CARD["vod_id"]
+        assert not any(r.params.get("t") == "unrelated-folder" for r in adapter.calls)
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+def test_live_follow_and_offline_tracks_are_not_playable_samples():
+    assert episodes({"vod_play_from": "未开播$$$关注",
+                     "vod_play_url": "等待$offline$$$关注主播$follow$fixture"}) == [None]
+    assert episodes({"vod_play_from": "HD$$$关注",
+                     "vod_play_url": "高清$stream$$$关注主播$follow$fixture"}) == [(1, "HD", "stream")]
 
 
 @pytest.mark.parametrize("module", ["home", "category", "search", "detail", "play"])

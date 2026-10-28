@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -53,6 +54,14 @@ class NativeAtClient:
                 "PianDan is title-search navigation; select a card in the client "
                 "to search other sources, not a standalone detail or play API"
             )
+        if plugin.api == "csp_Live" and method == "play":
+            play_id = str(params.get("id") or "")
+            parsed = urlsplit(play_id)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                # LiveService publishes the final stream in detail; /live-play
+                # is only a placeholder in AT, not its URL resolver.
+                record("at.inline_media", route="live", scheme=parsed.scheme)
+                return {"parse": 0, "jx": 0, "url": play_id, "header": {}}
         if method in {"play", "action"}:
             path = self._play_route(plugin) if method == "play" else "/play"
             query = self._play_query(plugin, params)
@@ -128,6 +137,8 @@ class NativeAtClient:
     ) -> dict[str, Any]:
         route = _builtin_route(plugin.api)
         if method == "home":
+            if plugin.api == "csp_AList":
+                return {"type": "0"}
             if route == "/pansou":
                 return {"t": "0"}
             if route == "/tg-search" and plugin.api == "csp_TgWeb":
@@ -154,6 +165,8 @@ class NativeAtClient:
             cls._add_filter_query(query, route, params.get("native_filter"))
             if route == "/vod":
                 query["f"] = cls._filter_text(params.get("native_filter"))
+                if plugin.api == "csp_AList":
+                    query["type"] = "0"
             for key in (
                 "sort",
                 "size",
@@ -174,6 +187,8 @@ class NativeAtClient:
                 "pg": str(params.get("pg") or "1"),
                 "quick": str(params.get("quick", True)).lower(),
             }
+            if plugin.api == "csp_AList":
+                query["type"] = "0"
             if route == "/tg-search" and plugin.api == "csp_TgWeb":
                 query["web"] = "true"
             elif route == "/tgsc":
@@ -199,6 +214,8 @@ class NativeAtClient:
             for key in ("ac", "depth"):
                 if params.get(key) not in (None, ""):
                     query[key] = str(params[key])
+            if route == "/live" and params.get("platform") not in (None, ""):
+                query["platform"] = str(params["platform"])
             return query
         raise NativeAtError(f"unsupported native method: {method}")
 

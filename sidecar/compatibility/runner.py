@@ -18,6 +18,7 @@ from sidecar import __version__
 from sidecar.diagnostics import TraceStore, new_trace_id, record, safe_label, trace_scope
 from sidecar.t4.adapter import T4Request
 from sidecar.compatibility.probes import ResourceProbes
+from sidecar.playback import PlaybackError
 from sidecar.worker.client import WorkerRemoteError
 from sidecar.worker.errors import error_details, safe_error_fields
 
@@ -64,14 +65,17 @@ def episodes(vod: dict[str, Any]) -> list[tuple[int, str, str] | None]:
         return [None]
     output = []
     for index, (flag, group) in enumerate(zip(flags, groups)):
-        if flag.casefold() in {"操作", "互动", "actions", "action"}:
+        if flag.casefold() in {"操作", "互动", "关注", "actions", "action", "follow"}:
+            continue
+        if flag in {"未开播", "已下播"}:
+            output.append(None)
             continue
         candidate = None
         for entry in group.split("#"):
             label, _, value = entry.partition("$")
             if not value or label.casefold().startswith((
                 "检查", "刷新", "删除", "清空", "点赞", "投币", "收藏", "取消", "互动状态",
-                "更新", "登录", "扫码", "绑定", "解绑",
+                "更新", "登录", "扫码", "绑定", "解绑", "关注",
                 "delete", "refresh", "clear", "update", "login", "logout", "favorite",
                 "unfavorite", "check", "bind", "unbind",
             )):
@@ -431,7 +435,8 @@ class CompatibilityRunner:
                                         count=len(search_cards), sample_origin=keyword_origin)
         else:
             stages["search"] = {"status": "blocked", "reason": "no_keyword_sample"}
-        candidates = catalog_cards or search_cards
+        # An explicit sample should test that result, not an unrelated home folder.
+        candidates = (search_cards or catalog_cards) if options.keyword else (catalog_cards or search_cards)
         if not candidates:
             for stage in ("detail", "image", "play", "media"):
                 stages[stage] = {"status": "blocked", "reason": "no_card_sample"}
@@ -488,8 +493,15 @@ class CompatibilityRunner:
                     play.update(status="fail", reason="missing_play_url")
                 elif not self.stopping:
                     row["active_stage"] = "media"
-                    payload = self.bridge.prepare(payload, base)
-                    media = await asyncio.to_thread(self.probes.media, payload)
+                    try:
+                        payload = await asyncio.to_thread(self.bridge.prepare, payload, base)
+                        media = await asyncio.to_thread(self.probes.media, payload)
+                    except PlaybackError as exc:
+                        media = {"status": "blocked" if exc.code in {
+                            "server_parser_unresolved", "server_parser_dash_unsupported",
+                            "server_parser_non_http",
+                        } else "fail", "reason": exc.code,
+                                 "real_device_verified": False}
             checks.append({"line": index + 1, "play": play, "media": media})
         row["line_coverage"]["tested"] = len(checks)
         if not checks:

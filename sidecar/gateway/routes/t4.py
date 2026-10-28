@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -8,8 +9,8 @@ from sidecar.at.subscription import SubscriptionParseError
 from sidecar.at.native import NativeAtUnsupportedError
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
-from sidecar.playback import PlaybackBridge
-from sidecar.worker.client import WorkerRemoteError
+from sidecar.playback import PlaybackBridge, PlaybackError
+from sidecar.worker.client import WorkerRemoteError, WorkerTimeoutError
 
 
 def build_t4_router(
@@ -57,8 +58,12 @@ def build_t4_router(
                 )
             )
             if module == "play" and playback is not None:
-                result = playback.prepare(result, str(request.base_url))
+                result = await asyncio.to_thread(playback.prepare, result, str(request.base_url))
             return result
+        except PlaybackError as exc:
+            raise HTTPException(status_code=502, detail={
+                "code": exc.code, "message": "服务端尚未取得可直接播放的媒体，请查看链路日志",
+            }) from exc
         except SubscriptionParseError as exc:
             raise HTTPException(
                 status_code=400,
@@ -72,6 +77,10 @@ def build_t4_router(
                     "message": str(exc),
                 },
             ) from exc
+        except WorkerTimeoutError as exc:
+            raise HTTPException(status_code=504, detail={
+                "code": "worker_timeout", "message": "服务端插件执行超时，请查看链路日志",
+            }) from exc
         except WorkerRemoteError as exc:
             raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except Exception as exc:
