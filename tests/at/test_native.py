@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from sidecar.at.native import NativeAtClient, NativeAtUnsupportedError
+from sidecar.at.native import NativeAtClient, NativeAtError, NativeAtUnsupportedError
 from sidecar.at.subscription import PluginDescriptor
 
 
@@ -204,7 +204,11 @@ def test_alist_and_xiaoya_keep_distinct_vod_types(method, params):
     assert "type" not in seen[1].url.params
 
 
-def test_native_pansou_uses_original_home_and_detail_parameter_names() -> None:
+@pytest.mark.parametrize("api,route", [
+    ("csp_FishPanSou", "/pansou"),
+    ("csp_FishPanSouGroup", "/pansou-group"),
+])
+def test_native_pansou_uses_original_home_and_detail_parameter_names(api, route) -> None:
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -213,9 +217,10 @@ def test_native_pansou_uses_original_home_and_detail_parameter_names() -> None:
 
     client = NativeAtClient(transport=httpx.MockTransport(handler))
     try:
-        client.call(builtin("csp_FishPanSou"), "home", {})
+        client.call(builtin(api), "home", {})
+        client.call(builtin(api), "category", {"tid": "pgroup:fixture:quark", "pg": "2"})
         client.call(
-            builtin("csp_FishPanSou"),
+            builtin(api),
             "detail",
             {"ids": ["pansou:1"]},
         )
@@ -223,7 +228,22 @@ def test_native_pansou_uses_original_home_and_detail_parameter_names() -> None:
         client.close()
 
     assert seen[0].url.params["t"] == "0"
-    assert seen[1].url.params["id"] == "pansou:1"
+    assert seen[1].url.params["t"] == "pgroup:fixture:quark"
+    assert seen[1].url.params["pg"] == "2"
+    assert seen[2].url.params["id"] == "pansou:1"
+    assert all(request.url.path == route + "/native-token" for request in seen)
+
+
+def test_grouped_search_empty_home_is_not_an_invalid_json_error():
+    client = NativeAtClient(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    try:
+        assert client.call(builtin("csp_FishPanSouGroup"), "home", {}) == {"class": [], "list": []}
+        with pytest.raises(NativeAtError, match="not JSON"):
+            client.call(builtin("csp_FishPanSouGroup"), "search", {"key": "Movie"})
+        with pytest.raises(NativeAtError, match="not JSON"):
+            client.call(builtin("csp_FishPanSou"), "home", {})
+    finally:
+        client.close()
 
 
 def test_native_emby_play_uses_the_original_emby_play_route() -> None:

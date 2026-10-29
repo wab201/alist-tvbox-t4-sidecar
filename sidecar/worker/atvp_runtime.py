@@ -4,7 +4,9 @@ import base64
 import ast
 import contextlib
 from functools import wraps
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -74,6 +76,11 @@ class AtvpRuntime:
 
         with self._quiet_stdout():
             result = self._spider.init(extend)
+            if hasattr(self._spider, "_load_inner_spider_class") and hasattr(
+                self._spider, "_resolve_local_proxy_base",
+            ):
+                # A server worker has no spring.jar device-side proxy to discover.
+                self._spider._resolve_local_proxy_base = lambda: None
             if payload.get("_t4_server_proxy") is True:
                 self._configure_server_proxy()
             name = self._spider.getName()
@@ -131,7 +138,213 @@ class AtvpRuntime:
         return self._invoke("categoryContent", tid, pg, filter_value, extend)
 
     def detail(self, ids: list[str]) -> Any:
-        return self._invoke("detailContent", ids)
+        spider = self._spider
+        if not (
+            spider is not None
+            and hasattr(spider, "_load_inner_spider_class")
+            and spider._category_mode_enabled()
+        ):
+            return self._invoke("detailContent", ids)
+        prefix = spider.DETAIL_PREFIX
+        decode_group = getattr(spider, "_decode_group_id", lambda value: None)
+        targets = [
+            (value[len(prefix):], None) if value.startswith(prefix)
+            else decode_group(value)
+            for value in ids
+        ]
+        if not any(target is not None for target in targets):
+            return self._invoke("detailContent", ids)
+        rows = []
+        warnings = []
+        try:
+            with self._quiet_stdout():
+                for value, target in zip(ids, targets):
+                    if target is None:
+                        result = self._invoke("detailContent", [value])
+                    else:
+                        result = self._folder_detail(value, *target)
+                    rows.extend(result.get("list") or [])
+                    warnings.extend(result.get("t4_warnings") or [])
+        except AtvpRuntimeError:
+            raise
+        except Exception as exc:
+            raise AtvpRuntimeError(
+                f"Atvp folder detail failed: {type(exc).__name__}"
+            ) from exc
+        return {"list": rows, **({"t4_warnings": warnings} if warnings else {})}
+
+    def _folder_detail(self, entry_id: str, source_id: str, group_index: int | None) -> dict:
+        spider = self._spider
+        load_vod = getattr(spider, "_load_category_detail_vod", None)
+        if load_vod is not None:
+            vod = load_vod(source_id)
+        else:
+            # A prefixed HTTP source ID is a site detail page, not a pan share.
+            result = spider._require_inner().detailContent([source_id])
+            result = spider._run_filters(
+                "detail", result, {"ids": [source_id], "source": "category"},
+            )
+            spider._cache_detail_result(result)
+            spider._cache_play_context(result)
+            vod = next(iter(result.get("list") or []), None)
+        if not isinstance(vod, dict):
+            raise AtvpRuntimeError("Atvp folder detail returned no item")
+        vod = dict(vod)
+        if group_index is not None or (not vod.get("vod_play_url") and vod.get("group")):
+            groups = vod.get("group") or []
+            if group_index is not None:
+                if group_index < 0 or group_index >= len(groups):
+                    raise AtvpRuntimeError("Atvp resource group is unavailable")
+                groups = [groups[group_index]]
+            flags, urls = [], []
+            for group in groups:
+                for item in group.get("media") or []:
+                    if isinstance(item, dict) and item.get("url"):
+                        flags.append(str(group.get("name") or "Resource"))
+                        label = str(item.get("name") or "Resource").replace("$", " ").replace("#", " ")
+                        urls.append(label + "$" + str(item["url"]))
+            vod.update(vod_play_from="$$$".join(flags), vod_play_url="$$$".join(urls))
+        flags = str(vod.get("vod_play_from") or "").split("$$$")
+        groups = str(vod.get("vod_play_url") or "").split("$$$")
+        if len(flags) != len(groups):
+            raise AtvpRuntimeError("Atvp folder playlist groups do not match")
+        output_flags, output_groups, warnings = [], [], []
+        resolved = {}
+        lines = []
+        for index, (flag, group) in enumerate(zip(flags, groups)):
+            entries = group.split("#")
+            pending = []
+            for entry_index, entry in enumerate(entries):
+                label, separator, target = entry.partition("$")
+                raw = target.removeprefix("push://")
+                is_share = (
+                    separator and spider._decode_parse(raw) is not None
+                    and Path(urlsplit(raw).path).suffix.lower() not in {
+                        ".m3u8", ".mpd", ".mp4", ".mkv", ".ts", ".flv", ".avi",
+                        ".mov", ".webm", ".m4a", ".mp3",
+                    }
+                )
+                if not is_share:
+                    pending.append(entry)
+                    continue
+                if pending:
+                    lines.append((flag, "#".join(pending), None, index, entry_index))
+                    pending = []
+                expanded_flag = flag + " / " + label if len(entries) > 1 and label else flag
+                lines.append((expanded_flag, entry, raw, index, entry_index))
+            if pending:
+                lines.append((flag, "#".join(pending), None, index, len(entries) - 1))
+        with self._prefetch_shares([line[2] for line in lines if line[2]]) as parse_statuses:
+            for flag, group, raw, index, entry_index in lines:
+                if raw is None:
+                    if group:
+                        output_flags.append(flag)
+                        output_groups.append(group)
+                    continue
+                try:
+                    if raw not in resolved:
+                        resolved[raw] = self._invoke("detailContent", [raw])
+                    parsed = resolved[raw]
+                    parsed_rows = parsed.get("list") if isinstance(parsed, dict) else None
+                    parsed_flags, parsed_groups = [], []
+                    for row in parsed_rows or []:
+                        line_flags = str(row.get("vod_play_from") or "").split("$$$")
+                        line_groups = str(row.get("vod_play_url") or "").split("$$$")
+                        if len(line_flags) != len(line_groups):
+                            continue
+                        for line_flag, line_group in zip(line_flags, line_groups):
+                            entries = line_group.split("#")
+                            if not entries or any(
+                                not entry.partition("$")[2]
+                                or entry.partition("$")[2].startswith("push://")
+                                or entry.partition("$")[2].removeprefix("push://") == raw
+                                for entry in entries
+                            ):
+                                continue
+                            parsed_flags.append(flag if len(line_flags) == 1 else flag + " / " + line_flag)
+                            parsed_groups.append(line_group)
+                    if not parsed_groups:
+                        raise AtvpRuntimeError("Atvp share returned no episodes")
+                    output_flags.extend(parsed_flags)
+                    output_groups.extend(parsed_groups)
+                except Exception as exc:
+                    # Worker stderr records typed metadata, never share URLs or exceptions.
+                    print(f"CloudDetailError: line={index + 1} type={type(exc).__name__}", file=sys.stderr)
+                    warnings.append({"code": "cloud_detail_unavailable", "line": index + 1,
+                                     **({"entry": entry_index + 1} if "#" in groups[index] else {}),
+                                     "error": type(exc).__name__,
+                                     **({"http_status": parse_statuses[raw]}
+                                        if raw in parse_statuses else {})})
+        if not output_groups:
+            raise AtvpRuntimeError("Atvp folder has no available episodes")
+        used = set()
+        for index, flag in enumerate(output_flags):
+            unique = flag or "Resource"
+            suffix = 2
+            while unique in used:
+                unique = f"{flag or 'Resource'} ({suffix})"
+                suffix += 1
+            used.add(unique)
+            output_flags[index] = unique
+        vod.update(vod_id=entry_id, vod_tag="file",
+                   vod_play_from="$$$".join(output_flags), vod_play_url="$$$".join(output_groups))
+        vod.pop("group", None)
+        result = {"list": [vod], **({"t4_warnings": warnings} if warnings else {})}
+        spider._cache_play_context(result)
+        return result
+
+    @contextlib.contextmanager
+    def _prefetch_shares(self, shares: list[str]):
+        """Overlap AT HTTP I/O only; loader, inner spider and filters stay serial."""
+        if not shares:
+            yield {}
+            return
+        spider = self._spider
+        endpoint = spider._build_backend_endpoint("parse")
+        post = spider.post
+        resolver = getattr(spider, "_resolve_deferred_share_url", None)
+        targets = {}
+        for share in dict.fromkeys(shares):
+            target = resolver(share, share) if resolver else share
+            targets[share] = target
+            if target != share and share in spider._detail_result_cache:
+                spider._detail_result_cache[target] = spider._detail_result_cache[share]
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="t4-cloud") as executor:
+            futures = {}
+            statuses = {}
+            for target in dict.fromkeys(targets.values()):
+                body = {"url": target}
+                cached = spider._detail_result_cache.get(target) or {}
+                if cached.get("vod_name"):
+                    body["title"] = cached["vod_name"]
+                keyword = getattr(spider, "_search_keyword_cache", {}).get(target)
+                if keyword:
+                    body["keyword"] = keyword
+                futures[target] = executor.submit(
+                    post, endpoint, json=body, params={"ac": "play"}, timeout=10,
+                )
+
+            def prefetched_post(url, *args, **kwargs):
+                target = (kwargs.get("json") or {}).get("url")
+                if url == endpoint and target in futures:
+                    response = futures[target].result()
+                    for share, resolved in targets.items():
+                        if resolved == target:
+                            statuses[share] = response.status_code
+                    return response
+                return post(url, *args, **kwargs)
+
+            spider.post = prefetched_post
+            if resolver:
+                spider._resolve_deferred_share_url = lambda source, share: targets.get(
+                    share, share,
+                )
+            try:
+                yield statuses
+            finally:
+                spider.post = post
+                if resolver:
+                    spider._resolve_deferred_share_url = resolver
 
     def search(self, key: str, quick: bool, pg: str = "1") -> Any:
         return self._invoke("searchContent", key, quick, pg)
@@ -174,9 +387,10 @@ class AtvpRuntime:
             self._base_modules = None
 
     def _invoke(self, method_name: str, *args: Any) -> Any:
-        normalize = (
-            self._plugin_result if method_name in JSON_RESULT_METHODS else self._json_value
-        )
+        def normalize(value):
+            if method_name in JSON_RESULT_METHODS:
+                return self._plugin_result(value, method_name=method_name)
+            return self._json_value(value)
         if self._js_process is not None:
             try:
                 return normalize(
@@ -195,6 +409,8 @@ class AtvpRuntime:
             raise AtvpRuntimeError(f"Atvp method is unavailable: {method_name}")
         try:
             with self._quiet_stdout():
+                if method_name == "searchContent":
+                    args = self._search_args(method, args)
                 return normalize(method(*args))
         except AtvpRuntimeError:
             raise
@@ -261,13 +477,28 @@ class AtvpRuntime:
         return response.get("result")
 
     @staticmethod
-    def _plugin_result(value: Any) -> Any:
+    def _search_args(method, args):
+        signature = inspect.signature(method)
+        try:
+            signature.bind(*args)
+        except TypeError:
+            # Older TVBox spiders implement searchContent(key, quick) only.
+            signature.bind(*args[:-1])
+            return args[:-1]
+        return args
+
+    @staticmethod
+    def _plugin_result(value: Any, *, method_name: str = "") -> Any:
         # TVBox spiders may return a JSON string instead of a Python object.
         if isinstance(value, str):
             try:
                 value = json.loads(value)
             except ValueError:
                 pass
+        if method_name == "searchContent" and isinstance(value, list) and all(
+            isinstance(item, dict) for item in value
+        ):
+            value = {"list": value}
         return AtvpRuntime._json_value(value)
 
     @staticmethod
@@ -383,16 +614,18 @@ class AtvpRuntime:
                 inner_class = original(instance, source_text)
                 inner_class.siteKey = self._host.site_key
                 # Decode before Atvp applies category wrapping, filters and play caches.
-                def normalize_result(method):
+                def normalize_result(method, method_name):
                     @wraps(method)
                     def invoke(*args, **kwargs):
-                        return self._plugin_result(method(*args, **kwargs))
+                        if method_name == "searchContent" and not kwargs:
+                            args = self._search_args(method, args)
+                        return self._plugin_result(method(*args, **kwargs), method_name=method_name)
                     return invoke
 
                 for name in JSON_RESULT_METHODS:
                     method = getattr(inner_class, name, None)
                     if callable(method):
-                        setattr(inner_class, name, normalize_result(method))
+                        setattr(inner_class, name, normalize_result(method, name))
                 return inner_class
 
             spider_class._load_inner_spider_class = load_inner

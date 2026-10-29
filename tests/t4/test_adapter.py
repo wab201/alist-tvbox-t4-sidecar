@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import threading
 
 from fastapi.testclient import TestClient
@@ -172,6 +173,28 @@ def test_adapter_does_not_invent_play_ids_for_empty_episode_entries() -> None:
     episodes = detail["list"][0]["vod_play_url"].split("#")
     assert episodes[:2] == ["$", "Placeholder$"]
     assert episodes[2].startswith("Play$t4_")
+
+
+def test_detail_metadata_uses_only_the_exact_catalog_card_and_preserves_results():
+    adapter = T4Adapter(SourceRegistry((source(),)), FakeWorker(), subscription_fetcher=fetcher)
+    plugin = descriptor()
+    card = {"vod_id": "movie-1", "vod_name": "Catalog title", "vod_pic": "https://image.example/cover"}
+    adapter._normalize("category", {"list": [card]}, source(), plugin)
+    raw = {"vod_id": "movie-1", "vod_name": "", "vod_play_url": "Episode$actual"}
+    detail = adapter._normalize("detail", {"list": [raw]}, source(), plugin)["list"][0]
+    assert detail["vod_name"] == card["vod_name"] and detail["vod_pic"] == card["vod_pic"]
+    assert raw == {"vod_id": "movie-1", "vod_name": "", "vod_play_url": "Episode$actual"}
+    assert adapter._normalize("detail", {"list": []}, source(), plugin) == {"list": []}
+    for other_source, other_plugin in (
+        (replace(source(), source_id="other"), plugin),
+        (source(), replace(plugin, plugin_id="other")),
+    ):
+        other = adapter._normalize("detail", {"list": [raw]}, other_source, other_plugin)["list"][0]
+        assert not other.get("vod_name") and not other.get("vod_pic")
+    fresh = adapter._normalize("detail", {"list": [{**raw, "vod_name": "Fresh title"}]}, source(), plugin)
+    assert fresh["list"][0]["vod_name"] == "Fresh title"
+    asyncio.run(adapter.reset_plugin(source().source_id, plugin.plugin_id))
+    assert not adapter._catalog_metadata
 
 
 def test_folder_category_requests_unwrap_opaque_card_ids(tmp_path) -> None:

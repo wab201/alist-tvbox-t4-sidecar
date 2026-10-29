@@ -8,6 +8,7 @@ import requests
 
 from sidecar.worker.atvp_runtime import AtvpRuntime
 from tests.worker.test_secspider_runtime import build_secspider_fixture
+from tests.worker.test_secspider_runtime import VENDOR_ATVP
 
 
 SOURCE = '''
@@ -82,4 +83,28 @@ def test_newer_atvp_local_proxy_discovery_is_disabled_without_clearing_config():
         assert values["params"] == {"id": "1@99", "type": ""}
     finally:
         runtime._spider = None
+        runtime.close()
+
+
+@pytest.mark.parametrize("server_proxy", [False, True])
+def test_device_port_scan_is_disabled_in_both_direct_and_server_modes(tmp_path, server_proxy):
+    path = tmp_path / "plugin.py"
+    path.write_text(SOURCE, encoding="utf-8")
+    loader = tmp_path / "loader.py"
+    loader.write_text(VENDOR_ATVP.read_text(encoding="utf-8") + """
+def unexpected_scan(self):
+    raise AssertionError("server must not scan a device proxy")
+Spider._resolve_local_proxy_base = unexpected_scan
+""", encoding="utf-8")
+    runtime = AtvpRuntime()
+    configs = {"PAN115": {"enabled": True}}
+    try:
+        runtime.init(base64.b64encode(json.dumps({
+            "api": "https://at.example", "source": str(path), "loader": str(loader),
+            "raw": True, "token": "fixture", "local_proxy_config": configs,
+            "_t4_server_proxy": server_proxy, "data": {"config_keys": list(configs)},
+        }).encode()).decode())
+        assert runtime._spider._resolve_local_proxy_base() is None
+        assert runtime._spider._localProxyConfig == configs
+    finally:
         runtime.close()

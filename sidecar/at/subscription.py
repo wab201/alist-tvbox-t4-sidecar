@@ -268,7 +268,7 @@ def _builtin_route(api: str) -> str | None:
         "csp_Jellyfin": "/jellyfin",
         "csp_FeiNiu": "/feiniu",
         "csp_FishPanSou": "/pansou",
-        "csp_FishPanSouGroup": "/pansou",
+        "csp_FishPanSouGroup": "/pansou-group",
         "csp_TgDouBan": "/tg-db",
         "csp_TgChannel": "/tgsc",
         "csp_TgWeb": "/tg-search",

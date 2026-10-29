@@ -121,6 +121,9 @@ class NativeAtClient:
                bytes=len(response.content))
         if response.status_code < 200 or response.status_code >= 300:
             raise NativeAtError(f"AT native request returned status {response.status_code}")
+        if path == "/pansou-group" and query == {"t": "0"} and not response.content.strip():
+            # The native grouped-search controller has no home recommendations.
+            return {"class": [], "list": []}
         try:
             payload = response.json()
         except ValueError as exc:
@@ -193,7 +196,7 @@ class NativeAtClient:
         if method == "home":
             if plugin.api == "csp_AList":
                 return {"type": "0"}
-            if route == "/pansou":
+            if route in {"/pansou", "/pansou-group"}:
                 return {"t": "0"}
             if route == "/tg-search" and plugin.api == "csp_TgWeb":
                 return {"web": "true"}
@@ -203,7 +206,7 @@ class NativeAtClient:
                 "t": str(params.get("tid") or ""),
                 "pg": str(params.get("pg") or "1"),
             }
-            if route == "/pansou" and not query["t"]:
+            if route in {"/pansou", "/pansou-group"} and not query["t"]:
                 query["t"] = "0"
             if route == "/tg-search" and plugin.api == "csp_TgWeb":
                 query["web"] = "true"
@@ -256,11 +259,14 @@ class NativeAtClient:
             if not isinstance(ids, list):
                 ids = [ids]
             values = [str(value) for value in ids if str(value)]
-            if route in {"/pansou", "/media"}:
+            if route in {"/pansou", "/pansou-group", "/media"}:
                 return {"id": values[0]} if values else {"id": ""}
             if route in {"/tg-search", "/tgsc", "/tg-db"}:
                 query = {"id": values[0]} if values else {"id": ""}
                 for key in ("ac", "title"):
+                    # T4's action is not AT's proxy-playlist representation.
+                    if key == "ac" and params.get(key) == "detail":
+                        continue
                     if params.get(key) not in (None, ""):
                         query[key] = str(params[key])
                 return query

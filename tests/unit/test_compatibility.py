@@ -135,6 +135,39 @@ def test_explicit_search_sample_is_not_replaced_by_unrelated_home_folder(tmp_pat
         bridge.close()
 
 
+@pytest.mark.parametrize("partial", [False, True])
+def test_cloud_gate_checks_the_t4_shortcut_and_does_not_hide_failed_lines(tmp_path, partial):
+    class CloudAdapter(Adapter):
+        def unwrap_id(self, value, **kwargs):
+            return "atvp_detail:movie-1"
+
+    def hook(request):
+        if request.module in {"home", "category", "search"}:
+            return {"class": [{"type_id": "1", "type_name": "Cloud"}], "list": [
+                {**CARD, "vod_tag": "folder"},
+            ]}
+        if request.module == "detail":
+            return {
+                "list": [{**CARD, "vod_play_from": "Drive", "vod_play_url": "Episode$opaque-play"}],
+                **({"t4_warnings": [{"code": "cloud_detail_unavailable", "line": 2}]} if partial else {}),
+            }
+    adapter = CloudAdapter(hook)
+    runner, bridge = runner_for(tmp_path, adapter=adapter)
+    try:
+        result = run_once(runner)
+        assert len([r for r in adapter.calls if r.module == "category"]) == 1
+        assert next(r for r in adapter.calls if r.module == "detail").params["ids"] == CARD["vod_id"]
+        stage = result["plugins"][0]["stages"]["detail"]
+        assert stage["status"] == ("blocked" if partial else "pass")
+        if partial:
+            assert stage["unavailable_lines"] == 1
+        assert result["gate"]["passed"] is not partial
+        assert result["plugins"][0]["stages"]["media"]["lines"][0]["status"] == "pass"
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
 def test_live_follow_and_offline_tracks_are_not_playable_samples():
     assert episodes({"vod_play_from": "未开播$$$关注",
                      "vod_play_url": "等待$offline$$$关注主播$follow$fixture"}) == [None]
@@ -158,6 +191,35 @@ def test_stage_failure_does_not_abort_other_plugins_or_pass_gate(tmp_path, modul
         assert rows["good"]["status"] == "pass"
         assert result["progress"]["completed"] == 2
         assert "private-secret" not in json.dumps(result)
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+def test_plugin_selection_only_runs_requested_plugins_and_labels_partial_scope(tmp_path):
+    runner, bridge = runner_for(tmp_path, {"sites": [
+        {"key": "chosen", "api": "csp_BiliBili"}, {"key": "other", "api": "csp_BiliBili"},
+    ]})
+    try:
+        result = run_once(runner, CheckOptions(plugin_ids=["chosen"]))
+        assert result["scope"] == "selected_plugins_sampled_capabilities"
+        assert result["progress"] == {"total": 1, "completed": 1}
+        assert result["gate"]["passed"] is True
+        assert {r.plugin_id for r in runner.adapter.calls} == {"chosen"}
+        assert result["sources"][0]["descriptor_count"] == 2
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+@pytest.mark.parametrize("selected", [["missing"], ["demo", "missing"]])
+def test_unknown_plugin_selection_cannot_pass_a_partial_gate(tmp_path, selected):
+    runner, bridge = runner_for(tmp_path)
+    try:
+        result = run_once(runner, CheckOptions(plugin_ids=selected))
+        assert result["state"] == "failed"
+        assert result["gate"]["passed"] is False
+        assert result["errors"] == [{"phase": "selection", "error": "unknown_plugin", "count": 1}]
     finally:
         runner.probes.close()
         bridge.close()
@@ -328,6 +390,115 @@ def test_folder_cards_use_category_navigation_before_detail(tmp_path):
         assert detail["navigation"] == [{"module": "category", "count": 1}]
         assert any(request.module == "category" and request.params["t"] == "folder-id"
                    for request in runner.adapter.calls)
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+@pytest.mark.parametrize("depth,expected", [(8, "pass"), (2, "not_tested")])
+def test_folder_navigation_reaches_deep_leaves_and_keeps_configured_limit(tmp_path, depth, expected):
+    def hook(request):
+        if request.module == "home":
+            return {"class": [], "list": [{**CARD, "vod_id": "folder-0", "vod_tag": "folder"}]}
+        if request.module == "category":
+            level = int(request.params["t"].split("-")[1])
+            if level < 3:
+                return {"list": [{**CARD, "vod_id": f"folder-{level + 1}", "vod_tag": "folder"}]}
+            return {"list": [dict(CARD)]}
+
+    runner, bridge = runner_for(tmp_path, adapter=Adapter(hook))
+    try:
+        report = run_once(runner, CheckOptions(navigation_depth=depth))
+        stages = report["plugins"][0]["stages"]
+        assert report["options"]["navigation_depth"] == depth
+        assert stages["detail"]["status"] == expected
+        assert len(stages["detail"]["navigation"]) == min(depth, 4)
+        if expected == "pass":
+            assert stages["media"]["status"] == "pass"
+        else:
+            assert stages["detail"]["reason"] == "navigation_depth_limit"
+            assert stages["media"]["status"] == "blocked"
+            assert not any(r.module in {"detail", "play"} for r in runner.adapter.calls)
+        # A missing category sample still prevents a false whole-plugin pass.
+        assert report["gate"]["passed"] is False
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+def test_folder_navigation_cycle_stops_without_repeating_requests_or_passing(tmp_path):
+    def hook(request):
+        if request.module == "home":
+            return {"class": [], "list": [{**CARD, "vod_id": "folder-a", "vod_tag": "folder"}]}
+        if request.module == "category":
+            target = "folder-b" if request.params["t"] == "folder-a" else "folder-a"
+            return {"list": [{**CARD, "vod_id": target, "vod_tag": "folder"}]}
+
+    runner, bridge = runner_for(tmp_path, adapter=Adapter(hook))
+    try:
+        report = run_once(runner)
+        stages = report["plugins"][0]["stages"]
+        assert stages["detail"]["status"] == "not_tested"
+        assert stages["detail"]["reason"] == "navigation_cycle_detected"
+        assert len(stages["detail"]["navigation"]) == 2
+        assert [r.params["t"] for r in runner.adapter.calls if r.module == "category"] == [
+            "folder-a", "folder-b",
+        ]
+        assert not any(r.module in {"detail", "play"} for r in runner.adapter.calls)
+        assert report["gate"]["passed"] is False
+        assert "folder-a" not in json.dumps(report)
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+def test_folder_navigation_api_failure_is_not_relabelled_as_an_empty_directory(tmp_path):
+    def hook(request):
+        if request.module == "home":
+            return {"class": [], "list": [{**CARD, "vod_tag": "folder"}]}
+        if request.module == "category":
+            raise RuntimeError("private upstream failure")
+
+    runner, bridge = runner_for(tmp_path, adapter=Adapter(hook))
+    try:
+        report = run_once(runner)
+        stage = report["plugins"][0]["stages"]["detail"]
+        assert stage["status"] == "fail"
+        assert stage["reason"] == "api_error"
+        assert stage["root_error"] == "RuntimeError"
+        assert stage["navigation"] == [{"module": "category", "count": 0}]
+        assert "private upstream failure" not in json.dumps(report)
+        assert report["gate"]["passed"] is False
+    finally:
+        runner.probes.close()
+        bridge.close()
+
+
+def test_folder_cycles_compare_raw_ids_when_public_ids_change_on_each_response(tmp_path):
+    class RotatingAdapter(Adapter):
+        def unwrap_id(self, value, **kwargs):
+            assert value.startswith("opaque-")
+            return "same-private-folder"
+
+    index = 0
+
+    def hook(request):
+        nonlocal index
+        if request.module in {"home", "category"}:
+            index += 1
+            return {"class": [], "list": [{
+                **CARD, "vod_id": f"opaque-{index}", "vod_tag": "folder",
+            }]}
+
+    runner, bridge = runner_for(tmp_path, adapter=RotatingAdapter(hook))
+    try:
+        report = run_once(runner)
+        stage = report["plugins"][0]["stages"]["detail"]
+        assert stage["reason"] == "navigation_cycle_detected"
+        assert stage["status"] == "not_tested"
+        assert len(stage["navigation"]) == 1
+        assert len([r for r in runner.adapter.calls if r.module == "category"]) == 1
+        assert "same-private-folder" not in json.dumps(report)
     finally:
         runner.probes.close()
         bridge.close()

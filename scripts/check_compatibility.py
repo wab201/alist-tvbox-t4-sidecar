@@ -18,9 +18,9 @@ async def run(args) -> dict:
     async with app.router.lifespan_context(app):
         runner = app.state.compatibility
         runner.start(CheckOptions(
-            source_ids=args.source, keyword=args.keyword,
+            source_ids=args.source, plugin_ids=args.plugin, keyword=args.keyword,
             concurrency=args.concurrency, category_limit=args.categories,
-            line_limit=args.lines,
+            line_limit=args.lines, navigation_depth=args.navigation_depth,
         ), "http://127.0.0.1:8765")
         await runner.task
         return runner.report
@@ -30,10 +30,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", type=Path, default=Path("tests/reports/compatibility-latest.json"))
     parser.add_argument("--source", action="append", default=[])
+    parser.add_argument("--plugin", action="append", default=[],
+                        help="Repeat to check only these plugin IDs.")
     parser.add_argument("--keyword", default="")
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--categories", type=int, default=2)
     parser.add_argument("--lines", type=int, default=4)
+    parser.add_argument("--navigation-depth", type=int, default=8)
     arguments = parser.parse_args()
     try:
         report = asyncio.run(run(arguments))

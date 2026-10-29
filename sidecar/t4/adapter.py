@@ -77,6 +77,7 @@ class T4Adapter:
         self._playback = playback_bridge
         self._plugin_locks: dict[str, asyncio.Lock] = {}
         self._navigation_cards: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
+        self._catalog_metadata: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self._navigation_slots = asyncio.Semaphore(3)
 
     def plugin_lock(self, source_id: str, plugin_id: str) -> asyncio.Lock:
@@ -84,6 +85,9 @@ class T4Adapter:
         return self._plugin_locks.setdefault(key, asyncio.Lock())
 
     async def reset_plugin(self, source_id: str, plugin_id: str) -> None:
+        for key in tuple(self._catalog_metadata):
+            if key[:2] == (source_id, plugin_id):
+                self._catalog_metadata.pop(key, None)
         reset = getattr(self._worker, "reset", None)
         if reset is not None:
             await asyncio.to_thread(reset, f"{source_id}:{plugin_id}")
@@ -413,11 +417,14 @@ class T4Adapter:
         if not isinstance(result, dict):
             raise SubscriptionParseError(f"{module} result must be an object")
         if module in {"home", "category", "search", "detail"}:
+            warnings = result.get("t4_warnings")
+            if isinstance(warnings, list) and warnings:
+                record("cloud.detail_partial", count=len(warnings), reason="share_expansion_failed")
             payload = dict(result)
             raw_list = payload.get("list")
             if isinstance(raw_list, list):
                 payload["list"] = [
-                    self._normalize_vod(item, source, plugin)
+                    self._normalize_vod(item, source, plugin, module=module)
                     if isinstance(item, dict)
                     else item
                     for item in raw_list
@@ -434,9 +441,25 @@ class T4Adapter:
         vod: dict[str, Any],
         source: SourceConfig,
         plugin: PluginDescriptor,
+        *,
+        module: str = "",
     ) -> dict[str, Any]:
         item = dict(vod)
         raw_id = str(item.get("vod_id") or "")
+        if raw_id:
+            key = (source.source_id, plugin.plugin_id, raw_id)
+            if module == "detail":
+                cached = self._catalog_metadata.get(key) or {}
+                for field in ("vod_name", "vod_pic"):
+                    if not item.get(field) and cached.get(field):
+                        item[field] = cached[field]
+            elif module in {"home", "category", "search"}:
+                cached = self._catalog_metadata.get(key) or {}
+                cached.update({field: item[field] for field in ("vod_name", "vod_pic") if item.get(field)})
+                self._catalog_metadata[key] = cached
+                self._catalog_metadata.move_to_end(key)
+                while len(self._catalog_metadata) > 512:
+                    self._catalog_metadata.popitem(last=False)
         if raw_id and plugin.api == "csp_PianDan":
             key = (source.source_id, plugin.plugin_id, raw_id)
             self._navigation_cards[key] = dict(item)
@@ -496,7 +519,7 @@ class T4Adapter:
             for key, value in headers.items()
         ):
             raise SubscriptionParseError("播放请求头必须是字符串键值对象")
-        payload["header"] = headers
+        payload["header"] = {key: value.strip(" \t") for key, value in headers.items()}
         for key in ("parse", "jx"):
             if payload[key] in ("0", "1"):
                 payload[key] = int(payload[key])

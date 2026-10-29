@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.0
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.1
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,13 +45,31 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用发布标签为 `0.3.0`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.1`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-从项目目录下载同一版本的镜像和校验文件：
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.1`。
+更新到 `0.3.1` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
+使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
+
+```bash
+gh run list --repo wab201/alist-tvbox-t4-sidecar --workflow container.yml --branch main --status success --limit 5
+gh run download RUN_ID --repo wab201/alist-tvbox-t4-sidecar --pattern 'nas-image-*' --dir releases/current
+cd releases/current
+sha256sum -c SHA256SUMS
+gzip -dc t4-sidecar.tar.gz | docker load
+cd ../..
+```
+
+将 `RUN_ID` 换为对应版本的构建编号，`.env` 的 `T4_IMAGE` 使用 `docker load`
+输出的固定 `sha-...` 标签，再执行下方不拉取镜像的启动命令。
+Actions 归档仅保留 3 天；没有访问权限或归档过期时，使用前述镜像拉取或下文源码构建。
+
+如需使用保留的 `0.3.0`，从项目目录下载同一版本的镜像和校验文件：
 
 ```bash
 mkdir -p releases/v0.3.0

@@ -29,10 +29,12 @@ STATUSES = ("pass", "fail", "blocked", "unsupported", "not_tested")
 
 class CheckOptions(BaseModel):
     source_ids: list[str] = Field(default_factory=list, max_length=100)
+    plugin_ids: list[str] = Field(default_factory=list, max_length=1000)
     keyword: str = Field(default="", max_length=120)
     concurrency: int = Field(default=2, ge=1, le=3)
     category_limit: int = Field(default=2, ge=1, le=10)
     line_limit: int = Field(default=4, ge=1, le=12)
+    navigation_depth: int = Field(default=8, ge=1, le=20)
 
 
 def digest(value: Any) -> str:
@@ -144,7 +146,8 @@ class CompatibilityRunner:
         self.report = {
             "schema_version": 1, "run_id": uuid.uuid4().hex, "state": "running",
             "started_at": time.time(), "artifact": deepcopy(self.artifact),
-            "environment": "server_sample", "scope": "all_plugins_sampled_capabilities",
+            "environment": "server_sample",
+            "scope": "selected_plugins_sampled_capabilities" if options.plugin_ids else "all_plugins_sampled_capabilities",
             "options": public_options, "sources": [], "plugins": [],
             "errors": [],
             "progress": {"total": 0, "completed": 0},
@@ -230,6 +233,8 @@ class CompatibilityRunner:
 
     async def _run(self, sources, options, base) -> None:
         work = []
+        requested = set(options.plugin_ids)
+        matched = set()
         report = self.report
         terminal_state = "completed"
         phase = "subscription"
@@ -256,6 +261,9 @@ class CompatibilityRunner:
                     source_row["status"] = "fail"
                 seen = Counter(plugin.plugin_id for plugin in snapshot.plugins)
                 for plugin in snapshot.plugins:
+                    if requested and plugin.plugin_id not in requested:
+                        continue
+                    matched.add(plugin.plugin_id)
                     metadata = plugin.public_metadata()
                     classification = metadata.get("compatibility_mode", plugin.plugin_type)
                     # Only the one-way digest leaves this scope; no ext/data is serialized.
@@ -277,7 +285,7 @@ class CompatibilityRunner:
                         row["stages"]["home"] = {"status": "fail", "reason": "duplicate_plugin_id"}
                     else:
                         work.append((source, plugin, row))
-                for unresolved in snapshot.unresolved_sites:
+                for unresolved in (() if requested else snapshot.unresolved_sites):
                     report["plugins"].append({
                         "source_id": safe_label(source.source_id),
                         "plugin_id": f"invalid-site-{unresolved['index']}",
@@ -286,6 +294,12 @@ class CompatibilityRunner:
                         "stages": {stage: {"status": "fail" if stage == "home" else "not_tested",
                                            "reason": "invalid_descriptor"} for stage in STAGES},
                     })
+            if requested - matched:
+                report["errors"].append({
+                    "phase": "selection", "error": "unknown_plugin",
+                    "count": len(requested - matched),
+                })
+                terminal_state = "failed"
             self._summary()
             phase = "report_write"
             await self._persist()
@@ -388,12 +402,16 @@ class CompatibilityRunner:
                 stages[stage] = {"status": "pass", "duration_ms": round((time.monotonic() - start) * 1000)}
                 return payload
             except Exception as exc:
-                details = exc.details if isinstance(exc, WorkerRemoteError) else {}
+                details = (
+                    exc.details if isinstance(exc, WorkerRemoteError)
+                    else safe_error_fields(error_details(exc))
+                )
                 root_error = details.get("root_error", "")
                 stages[stage] = {
                     "status": "blocked" if "Timeout" in type(exc).__name__ or "Timeout" in root_error else "fail",
                     "reason": "api_error", "error": type(exc).__name__,
-                    **({"code": exc.code, **details} if isinstance(exc, WorkerRemoteError) else {}),
+                    **details,
+                    **({"code": exc.code} if isinstance(exc, WorkerRemoteError) else {}),
                     "duration_ms": round((time.monotonic() - start) * 1000),
                 }
                 return None
@@ -457,26 +475,62 @@ class CompatibilityRunner:
                 stages[stage] = {"status": "blocked", "reason": "no_card_sample"}
             return
         selected = candidates[0]
+        shortcut = None
+        if selected.get("vod_tag") == "folder" and hasattr(self.adapter, "unwrap_id"):
+            raw_id = self.adapter.unwrap_id(
+                str(selected["vod_id"]), source_id=source.source_id,
+                plugin_id=plugin.plugin_id, kind="detail",
+            )
+            if raw_id.startswith(("atvp_detail:", "atvp_group:")):
+                # Test the real T4 detail shortcut, not only AT's folder navigation.
+                shortcut = await call("detail", {"ac": "detail", "ids": selected["vod_id"]})
+                if shortcut is None:
+                    for stage in ("image", "play", "media"):
+                        stages[stage] = {"status": "blocked", "reason": "detail_shortcut_failed"}
+                    return
         navigation = []
-        for _ in range(3):
+        visited = set()
+        navigation_reason = "navigation_depth_limit"
+        for _ in range(options.navigation_depth):
+            if shortcut is not None:
+                break
             if selected.get("vod_tag") != "folder":
                 break
+            folder_id = str(selected["vod_id"])
+            if hasattr(self.adapter, "unwrap_id"):
+                folder_id = self.adapter.unwrap_id(
+                    folder_id, source_id=source.source_id,
+                    plugin_id=plugin.plugin_id, kind="detail",
+                )
+            if folder_id in visited:
+                navigation_reason = "navigation_cycle_detected"
+                break
+            visited.add(folder_id)
             listing = await call("detail", {"t": selected["vod_id"], "pg": 1}, module="category")
             folder_cards = cards(listing)
             navigation.append({"module": "category", "count": len(folder_cards)})
             if not folder_cards:
-                stages["detail"].update(status="blocked", reason="empty_folder", navigation=navigation)
+                if listing is not None:
+                    stages["detail"].update(status="blocked", reason="empty_folder")
+                stages["detail"]["navigation"] = navigation
                 stages["play"] = stages["media"] = {"status": "blocked", "reason": "no_detail_sample"}
                 if not self.stopping:
                     stages["image"] = await asyncio.to_thread(self.probes.image, selected.get("vod_pic"))
                 return
             selected = next((card for card in folder_cards if card.get("vod_tag") != "folder"), folder_cards[0])
-        if selected.get("vod_tag") == "folder":
-            stages["detail"] = {"status": "not_tested", "reason": "navigation_depth_limit", "navigation": navigation}
+        if shortcut is None and selected.get("vod_tag") == "folder":
+            stages["detail"] = {"status": "not_tested", "reason": navigation_reason, "navigation": navigation}
             for stage in ("image", "play", "media"):
                 stages[stage] = {"status": "blocked", "reason": "no_detail_sample"}
             return
-        detail = await call("detail", {"ac": "detail", "ids": selected["vod_id"]})
+        detail = shortcut if shortcut is not None else await call(
+            "detail", {"ac": "detail", "ids": selected["vod_id"]},
+        )
+        if (detail or {}).get("t4_warnings"):
+            stages["detail"].update(
+                status="blocked", reason="cloud_lines_unavailable",
+                unavailable_lines=len(detail["t4_warnings"]),
+            )
         if navigation:
             stages["detail"]["navigation"] = navigation
         detail_cards = cards(detail)

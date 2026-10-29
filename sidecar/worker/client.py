@@ -164,6 +164,12 @@ class WorkerSession:
             process.stdin.flush()
 
             deadline = self._config.request_timeout if timeout is None else timeout
+            if timeout is None and method == "detail" and any(
+                str(value).startswith(("atvp_detail:", "atvp_group:"))
+                for value in request.params.get("ids", [])
+            ):
+                # One T4 detail can expand several AT resource redirects/shares.
+                deadline = max(deadline, 120.0)
             try:
                 response_or_error = self._responses.get(timeout=deadline)
             except queue.Empty as exc:

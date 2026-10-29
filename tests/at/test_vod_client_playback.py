@@ -9,7 +9,9 @@ from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.t4.adapter import T4Adapter
 
 
-@pytest.mark.parametrize("api", ["csp_XiaoYa", "csp_AList"])
+@pytest.mark.parametrize("api", [
+    "csp_XiaoYa", "csp_AList", "csp_TgWeb", "csp_TgChannel", "csp_TgDouBan",
+])
 @pytest.mark.parametrize("transport", ["GET", "JSON", "FORM"])
 @pytest.mark.parametrize("module_path", [False, True])
 @pytest.mark.parametrize("with_ac", [False, True])
@@ -20,6 +22,9 @@ def test_vod_detail_to_play_consumes_client_ac_and_preserves_media_headers(
     media_url = "https://media.example/episode.mkv?signature=fixture"
     headers = {"Referer": "https://drive.example/", "User-Agent": "Fixture player"}
     raw_play_id = "12@345"
+    route = {
+        "csp_TgWeb": "/tg-search", "csp_TgChannel": "/tgsc", "csp_TgDouBan": "/tg-db",
+    }.get(api, "/vod")
 
     async def subscription(_source):
         return {"sites": [{
@@ -29,10 +34,11 @@ def test_vod_detail_to_play_consumes_client_ac_and_preserves_media_headers(
 
     def backend(request):
         seen.append(request)
-        if request.url.path == "/vod/fixture-token":
+        if request.url.path == route + "/fixture-token":
             query = dict(request.url.params)
-            assert query["ids"] == "movie-1"
-            assert query["depth"] == "2"
+            assert query["id" if route != "/vod" else "ids"] == "movie-1"
+            if route == "/vod":
+                assert query["depth"] == "2"
             # AT changes the episode representation when this control leaks.
             play_id = (
                 "https://at.example/p/fixture-token/" + raw_play_id
