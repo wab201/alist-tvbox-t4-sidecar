@@ -15,6 +15,19 @@ from sidecar.diagnostics import record
 class NativeAtError(RuntimeError):
     """A redacted failure while calling an AT native source."""
 
+    def __init__(self, message: str, *, status: int | None = None, reason: str = ""):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+
+    def public_error(self) -> dict[str, Any]:
+        return {
+            "code": "at_upstream_failed",
+            "message": "AT 上游请求失败，请查看链路日志中的状态和原因",
+            **({"upstream_status": self.status} if self.status is not None else {}),
+            **({"reason": self.reason} if self.reason else {}),
+        }
+
 
 class NativeAtUnsupportedError(NativeAtError):
     """The original source has no server-side route that T4 can invoke."""
@@ -79,6 +92,12 @@ class NativeAtClient:
                 # is only a placeholder in AT, not its URL resolver.
                 record("at.inline_media", route="live", scheme=parsed.scheme)
                 return {"parse": 0, "jx": 0, "url": play_id, "header": {}}
+        if plugin.api in {"csp_TgWeb", "csp_TgChannel", "csp_TgDouBan"} and method == "play":
+            play_id = str(params.get("id") or "")
+            parsed = urlsplit(play_id)
+            if parsed.scheme in {"http", "https"} and parsed.hostname and parsed.path.startswith("/v/"):
+                record("at.inline_media", route="telegram", scheme=parsed.scheme)
+                return {"parse": 0, "jx": 0, "url": play_id, "header": {}}
         if method in {"play", "action"}:
             path = self._play_route(plugin) if method == "play" else "/play"
             query = self._play_query(plugin, params)
@@ -115,21 +134,47 @@ class NativeAtClient:
         except httpx.HTTPError as exc:
             record("at.failed", route=path.strip("/"), error=type(exc).__name__,
                    duration_ms=round((time.monotonic() - start) * 1000))
-            raise NativeAtError("AT native request failed before receiving a response") from exc
+            raise NativeAtError(
+                "AT native request failed before receiving a response", reason="network_error",
+            ) from exc
         record("at.response", route=path.strip("/"), status=response.status_code,
                duration_ms=round((time.monotonic() - start) * 1000),
                bytes=len(response.content))
         if response.status_code < 200 or response.status_code >= 300:
-            raise NativeAtError(f"AT native request returned status {response.status_code}")
+            reason = "http_status"
+            try:
+                error = response.json()
+                message = str(error.get("detail") or error.get("message") or "") if isinstance(error, dict) else ""
+                # Classify only known messages; never expose upstream body or URLs.
+                for marker, category in (
+                    ("Invalid share link format", "invalid_share"),
+                    ("无法识别的分享链接", "unsupported_share"),
+                    ("帐号", "provider_account"),
+                    ("账号", "provider_account"),
+                    ("找不到", "resource_not_found"),
+                    ("失效", "share_unavailable"),
+                    ("不存在", "resource_not_found"),
+                    ("过期", "expired"),
+                ):
+                    if marker in message:
+                        reason = category
+                        break
+            except ValueError:
+                pass
+            record("at.rejected", route=path.strip("/"), status=response.status_code, reason=reason)
+            raise NativeAtError(
+                f"AT native request returned status {response.status_code}",
+                status=response.status_code, reason=reason,
+            )
         if path == "/pansou-group" and query == {"t": "0"} and not response.content.strip():
             # The native grouped-search controller has no home recommendations.
             return {"class": [], "list": []}
         try:
             payload = response.json()
         except ValueError as exc:
-            raise NativeAtError("AT native response is not JSON") from exc
+            raise NativeAtError("AT native response is not JSON", reason="invalid_response") from exc
         if not isinstance(payload, dict):
-            raise NativeAtError("AT native response must be an object")
+            raise NativeAtError("AT native response must be an object", reason="invalid_response")
         return payload
 
     @staticmethod

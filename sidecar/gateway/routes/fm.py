@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from sidecar.at.native import NativeAtUnsupportedError
+from sidecar.at.native import NativeAtError, NativeAtUnsupportedError
 from sidecar.at.subscription import SubscriptionParseError
 from sidecar.gateway.fm import translate_fm_request
 from sidecar.gateway.source_registry import SourceRegistry
@@ -98,6 +98,8 @@ def build_fm_router(
             raise HTTPException(status_code=504, detail={
                 "code": "worker_timeout", "message": "服务端插件执行超时，请查看链路日志",
             }) from exc
+        except NativeAtError as exc:
+            raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except WorkerRemoteError as exc:
             raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except Exception as exc:

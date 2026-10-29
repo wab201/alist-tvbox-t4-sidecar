@@ -171,8 +171,12 @@ class TraceMiddleware:
         start = time.monotonic()
         status = 500
         path = scope.get("path", "")
+        root_path = scope.get("root_path", "").rstrip("/")
+        if root_path and (path == root_path or path.startswith(root_path + "/")):
+            path = path[len(root_path):] or "/"
         route = next((name for prefix, name in (
             ("/t4/fm/", "fm"), ("/t4/media/", "media"),
+            ("/t4/images/", "image"),
             ("/t4/proxy/", "proxy"),
             ("/t4/api/diagnostics/", "diagnostics"),
             ("/t4/config.json", "subscription"),

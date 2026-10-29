@@ -8,6 +8,7 @@ import threading
 import time
 import re
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from sidecar.at.subscription import (
     PluginDescriptor,
@@ -21,6 +22,7 @@ from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
 from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
 from sidecar.playback import PlaybackBridge
+from sidecar.images import ImageBridge
 
 
 class WorkerInvoker(Protocol):
@@ -66,6 +68,7 @@ class T4Adapter:
         subscription_resolver: Any | None = None,
         local_snapshot_provider: Any | None = None,
         playback_bridge: PlaybackBridge | None = None,
+        image_bridge: ImageBridge | None = None,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
@@ -75,6 +78,7 @@ class T4Adapter:
         self._subscription_resolver = subscription_resolver
         self._local_snapshot_provider = local_snapshot_provider
         self._playback = playback_bridge
+        self._images = image_bridge
         self._plugin_locks: dict[str, asyncio.Lock] = {}
         self._navigation_cards: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self._catalog_metadata: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
@@ -247,6 +251,8 @@ class T4Adapter:
             vod_id=str(ids[0]), vod_play_from="$$$".join(flags),
             vod_play_url="$$$".join(groups),
         )
+        if self._images is not None and isinstance(item.get("vod_pic"), str):
+            item["vod_pic"] = self._images.prepare(item["vod_pic"], request.proxy_base, plugin.backend_api)
         return {"list": [item]}
 
     async def _invoke(
@@ -294,6 +300,12 @@ class T4Adapter:
             source,
             plugin,
         )
+        if self._images is not None and request.module in {"home", "category", "search", "detail"}:
+            for item in payload.get("list") or []:
+                if isinstance(item, dict) and isinstance(item.get("vod_pic"), str):
+                    item["vod_pic"] = self._images.prepare(
+                        item["vod_pic"], request.proxy_base, plugin.backend_api,
+                    )
         if request.module == "play" and server_proxy and self._playback is not None:
             payload = self._playback.relay_at(
                 payload, request.proxy_base, backend_api=plugin.backend_api,
@@ -453,6 +465,11 @@ class T4Adapter:
         module: str = "",
     ) -> dict[str, Any]:
         item = dict(vod)
+        if not item.get("vod_pic"):
+            for field in ("pic", "poster", "cover", "thumb", "image"):
+                if isinstance(item.get(field), str) and item[field]:
+                    item["vod_pic"] = item[field]
+                    break
         raw_id = str(item.get("vod_id") or "")
         if raw_id:
             key = (source.source_id, plugin.plugin_id, raw_id)
@@ -498,6 +515,10 @@ class T4Adapter:
             episodes = []
             for episode in group.split("#"):
                 label, separator, raw_id = episode.partition("$")
+                if not separator and plugin.api in {"csp_TgWeb", "csp_TgChannel", "csp_TgDouBan"}:
+                    parsed = urlsplit(episode)
+                    if parsed.scheme in {"http", "https"} and parsed.hostname and parsed.path.startswith("/v/"):
+                        label, separator, raw_id = "视频", "$", episode
                 if not separator or not raw_id:
                     episodes.append(episode)
                     continue

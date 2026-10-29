@@ -374,3 +374,38 @@ def test_native_client_rejects_client_local_builtin_without_server_route() -> No
             raise AssertionError("expected unsupported builtin error")
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("api", ["csp_TgWeb", "csp_TgChannel", "csp_TgDouBan"])
+def test_telegram_published_video_does_not_enter_cloud_play(api):
+    def unexpected(_):
+        raise AssertionError("Telegram /v/ media must not be parsed as a cloud ID")
+    client = NativeAtClient(transport=httpx.MockTransport(unexpected))
+    url = "https://media.example/v/fixture?sign=private"
+    try:
+        assert client.call(builtin(api), "play", {"id": url}) == {
+            "parse": 0, "jx": 0, "url": url, "header": {},
+        }
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("message,reason", [
+    ("Invalid share link format https://private.example/secret", "invalid_share"),
+    ("找不到迅雷云盘帐号 private-secret", "provider_account"),
+    ("链接已失效 private-secret", "share_unavailable"),
+    ("https://private.example/secret", "http_status"),
+])
+@pytest.mark.parametrize("field", ["message", "detail"])
+def test_native_failure_classifies_without_exposing_response(message, reason, field):
+    client = NativeAtClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(400, json={field: message})
+    ))
+    try:
+        with pytest.raises(NativeAtError) as caught:
+            client.call(builtin("csp_TgWeb"), "detail", {"ids": ["fixture"]})
+        error = caught.value.public_error()
+        assert error["upstream_status"] == 400 and error["reason"] == reason
+        assert "private" not in json.dumps(error) and "private" not in str(caught.value)
+    finally:
+        client.close()

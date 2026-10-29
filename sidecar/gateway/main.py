@@ -35,6 +35,8 @@ from sidecar.gateway.routes.compatibility import build_compatibility_router
 from sidecar.gateway.routes.plugin_proxy import build_plugin_proxy_router
 from sidecar.plugin_proxy import PluginProxyRegistry
 from sidecar.resources import IdleMemory, ResourceActivityMiddleware
+from sidecar.images import ImageBridge
+from sidecar.gateway.routes.images import build_images_router
 
 
 def create_app(
@@ -47,6 +49,7 @@ def create_app(
     trace_store = TraceStore(runtime_settings.log_file)
     proxies = PluginProxyRegistry()
     playback = PlaybackBridge(proxy_registry=proxies)
+    images = ImageBridge()
     proxy_client = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(25, connect=3))
     if source_registry is not None:
         runtime_sources = source_registry
@@ -101,6 +104,7 @@ def create_app(
             local_snapshot_provider=upload_store.snapshot_for,
             native_invoker=NativeAtInvoker(native_client),
             playback_bridge=playback,
+            image_bridge=images,
         )
     else:
         runtime_adapter = t4_adapter
@@ -118,6 +122,7 @@ def create_app(
         local_snapshot_provider=upload_store.snapshot_for,
         native_invoker=NativeAtInvoker(native_client) if native_client is not None else None,
         playback_bridge=playback,
+        image_bridge=images,
     ) if t4_adapter is None else t4_adapter
 
     async def gate_snapshot(source):
@@ -163,6 +168,7 @@ def create_app(
             except TimeoutError:
                 pass
             try:
+                images.prune_expired()
                 await asyncio.to_thread(reclaim_resources)
             except Exception as exc:
                 trace_store.emit("memory.reclaim_failed", error=type(exc).__name__)
@@ -187,6 +193,7 @@ def create_app(
             await playback.aclose()
             playback.close()
             await proxy_client.aclose()
+            await images.aclose()
             trace_store.close()
 
     app = FastAPI(
@@ -198,10 +205,12 @@ def create_app(
     )
     app.state.traces = trace_store
     app.state.playback = playback
+    app.state.images = images
     app.state.compatibility = compatibility
     app.state.reclaim_resources = reclaim_resources
     app.state.memory = memory
     app.include_router(build_plugin_proxy_router(proxies, proxy_client))
+    app.include_router(build_images_router(images))
     app.add_middleware(TraceMiddleware, store=trace_store)
     app.add_middleware(ResourceActivityMiddleware, memory=memory)
     app.include_router(build_diagnostics_router(trace_store, playback, runtime_adapter))

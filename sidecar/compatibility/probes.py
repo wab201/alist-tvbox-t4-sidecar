@@ -16,6 +16,7 @@ import m3u8
 from PIL import Image, UnidentifiedImageError
 
 from sidecar.playback import PlaybackBridge, PlaybackError
+from sidecar.images import split_image
 
 
 def image_kind(data: bytes) -> str:
@@ -172,20 +173,7 @@ class ResourceProbes:
         try:
             if not isinstance(value, str) or not value:
                 raise ProbeFailure("missing_image")
-            headers = {}
-            url = value
-            if "@{" in value:
-                url, raw = value.split("@", 1)
-                headers = json.loads(raw)
-                if not isinstance(headers, dict):
-                    raise ProbeFailure("invalid_image_headers")
-            elif "@" in value:
-                url, *parts = value.split("@")
-                for part in parts:
-                    key, separator, val = part.partition("=")
-                    if not separator:
-                        raise ProbeFailure("image_header_syntax", status="unsupported")
-                    headers[key] = val
+            url, headers = split_image(value)
             limit = 2_097_152
             data, response_headers, _, status = self._fetch(url, headers, limit=limit)
             kind = image_kind(data)

@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from sidecar.at.subscription import PluginDescriptor, SubscriptionSnapshot
@@ -195,6 +196,19 @@ def test_detail_metadata_uses_only_the_exact_catalog_card_and_preserves_results(
     assert fresh["list"][0]["vod_name"] == "Fresh title"
     asyncio.run(adapter.reset_plugin(source().source_id, plugin.plugin_id))
     assert not adapter._catalog_metadata
+
+
+@pytest.mark.parametrize("field", ["pic", "poster", "cover", "thumb", "image"])
+def test_actual_cover_alias_is_used_without_overriding_canonical_cover(field):
+    adapter = T4Adapter(SourceRegistry((source(),)), FakeWorker())
+    try:
+        card = {"vod_id": "fixture", field: "https://image.example/real.jpg"}
+        item = adapter._normalize_vod(card, source(), descriptor(), module="category")
+        assert item["vod_pic"] == card[field] and "vod_pic" not in card
+        card["vod_pic"] = "https://image.example/canonical.jpg"
+        assert adapter._normalize_vod(card, source(), descriptor())["vod_pic"] == card["vod_pic"]
+    finally:
+        adapter.close()
 
 
 def test_folder_category_requests_unwrap_opaque_card_ids(tmp_path) -> None:

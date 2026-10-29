@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from sidecar.at.subscription import SubscriptionParseError
-from sidecar.at.native import NativeAtUnsupportedError
+from sidecar.at.native import NativeAtError, NativeAtUnsupportedError
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.playback import PlaybackBridge, PlaybackError
@@ -85,6 +85,8 @@ def build_t4_router(
             raise HTTPException(status_code=504, detail={
                 "code": "worker_timeout", "message": "服务端插件执行超时，请查看链路日志",
             }) from exc
+        except NativeAtError as exc:
+            raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except WorkerRemoteError as exc:
             raise HTTPException(status_code=502, detail=exc.public_error()) from exc
         except Exception as exc:
