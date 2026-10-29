@@ -40,12 +40,14 @@ class MediaResponse(ManagedStreamingResponse):
                 record("media.manifest", parent_trace=asset.trace, bytes=len(content))
             else:
                 self.upstream = await self.bridge.open_media_async(
-                    asset, request.method, dict(request.headers),
+                    asset, request.method, dict(request.headers), redirect=True,
                 )
                 upstream = self.upstream
                 names = ["content-type", "content-length", "content-range", "accept-ranges"]
                 if asset.kind != "segment":
                     names += ["etag", "last-modified", "content-encoding"]
+                if upstream.status_code == 302:
+                    names.append("location")
                 headers = {name: upstream.headers[name] for name in names if name in upstream.headers}
                 headers["Cache-Control"] = "no-store"
                 headers["X-Accel-Buffering"] = "no"

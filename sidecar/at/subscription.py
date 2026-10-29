@@ -12,6 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 import httpx
 
 from sidecar.gateway.source_registry import SourceConfig
+from sidecar.image_headers import ImageHeaderRule, parse_image_header_rules
 
 
 class SubscriptionParseError(ValueError):
@@ -40,6 +41,7 @@ class PluginDescriptor:
     site_options: dict[str, Any] = field(default_factory=dict)
     native_client_site: dict[str, Any] = field(default_factory=dict)
     t4_endpoint: str = field(default="", repr=False)
+    image_headers: tuple[ImageHeaderRule, ...] = field(default=(), repr=False)
 
     def worker_extend(self, *, server_proxy: bool = False) -> str:
         payload: dict[str, Any] = {
@@ -318,9 +320,10 @@ class SubscriptionParser:
         plugins: list[PluginDescriptor] = []
         errors: list[str] = []
         unresolved: list[dict[str, Any]] = []
+        image_headers = parse_image_header_rules(payload.get("headers"))
         for index, site in enumerate(raw_sites):
             try:
-                descriptor = self._parse_site(index, site, payload.get("spider"))
+                descriptor = self._parse_site(index, site, payload.get("spider"), image_headers)
             except SubscriptionParseError as exc:
                 errors.append(f"site[{index}]: {exc}")
                 unresolved.append({"index": index, "reason": "invalid_descriptor"})
@@ -336,7 +339,8 @@ class SubscriptionParser:
         )
 
     def _parse_site(
-        self, index: int, site: Any, default_jar: Any = None
+        self, index: int, site: Any, default_jar: Any = None,
+        image_headers: tuple[ImageHeaderRule, ...] = (),
     ) -> PluginDescriptor:
         if not isinstance(site, dict):
             raise SubscriptionParseError("site must be an object")
@@ -414,6 +418,7 @@ class SubscriptionParser:
             },
             native_client_site=native_client_site,
             t4_endpoint=t4_endpoint,
+            image_headers=image_headers,
         )
 
 

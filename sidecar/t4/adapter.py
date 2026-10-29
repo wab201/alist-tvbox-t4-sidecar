@@ -252,7 +252,10 @@ class T4Adapter:
             vod_play_url="$$$".join(groups),
         )
         if self._images is not None and isinstance(item.get("vod_pic"), str):
-            item["vod_pic"] = self._images.prepare(item["vod_pic"], request.proxy_base, plugin.backend_api)
+            item["vod_pic"] = self._images.prepare(
+                item["vod_pic"], request.proxy_base, plugin.backend_api,
+                rules=plugin.image_headers,
+            )
         return {"list": [item]}
 
     async def _invoke(
@@ -305,6 +308,7 @@ class T4Adapter:
                 if isinstance(item, dict) and isinstance(item.get("vod_pic"), str):
                     item["vod_pic"] = self._images.prepare(
                         item["vod_pic"], request.proxy_base, plugin.backend_api,
+                        rules=plugin.image_headers,
                     )
         if request.module == "play" and server_proxy and self._playback is not None:
             payload = self._playback.relay_at(

@@ -5,6 +5,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 import hashlib
+import ipaddress
 import itertools
 import re
 import secrets
@@ -20,6 +21,7 @@ from lxml import etree
 from sidecar.diagnostics import record, trace_id
 from sidecar.hls import (
     AsyncClosingStream, ClosingStream, HlsError, content_range, png_ts_offset, rewrite_manifest,
+    standard_segment,
 )
 from sidecar.server_parser import ServerParseError, resolve_page
 
@@ -43,6 +45,8 @@ class MediaAsset:
     prefix: int | None = None
     upstream_size: int | None = None
     local_transport: bool = False
+    redirectable: bool = False
+    standard: bool = False
 
 
 class PlaybackBridge:
@@ -146,12 +150,52 @@ class PlaybackBridge:
                     None, url, root.headers, "application/octet-stream",
                     root.trace, time.monotonic(), kind,
                     local_transport=root.local_transport,
+                    redirectable=(
+                        not root.headers and not root.local_transport
+                        and self._direct_target(root.url) and self._direct_target(url)
+                    ),
                 )
                 self._size += 1
             root.created = time.monotonic()
             self._assets.move_to_end(parent)
             self._evict()
         return base.rstrip("/") + "/t4/media/" + parent + "~" + child
+
+    def _direct_target(self, url: str) -> bool:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        if (
+            parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+            or "." not in host or host.endswith((".local", ".lan", ".internal"))
+            or parsed.path.startswith(("/t4/media/", "/t4/proxy/"))
+            or self._proxies is not None and self._proxies.resolve(url) is not None
+        ):
+            return False
+        try:
+            return ipaddress.ip_address(host).is_global
+        except ValueError:
+            return True
+
+    def _redirect_response(self, asset: MediaAsset, upstream: httpx.Response) -> httpx.Response | None:
+        if (
+            not asset.redirectable or asset.headers or asset.local_transport
+            or upstream.status_code not in {200, 206}
+            or asset.kind == "segment" and not asset.standard
+            or not self._direct_target(str(upstream.url))
+        ):
+            return None
+        # A redirect cannot transfer cookies established only in the server's HTTP session.
+        if any(
+            response.headers.get("set-cookie")
+            or response.request.headers.get("cookie")
+            or response.request.headers.get("authorization")
+            for response in [*upstream.history, upstream]
+        ):
+            return None
+        record("media.redirect", parent_trace=asset.trace, reason="headerless_resource", bytes=0)
+        return httpx.Response(302, headers={
+            "Location": asset.url, "Content-Length": "0", "Cache-Control": "no-store",
+        }, stream=httpx.ByteStream(b""))
 
     def _request(self, asset: MediaAsset, method: str, headers: dict) -> httpx.Response:
         url = asset.url
@@ -161,7 +205,12 @@ class PlaybackBridge:
             url, client = resolved, self._local_client
         elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
             client = self._local_client
-        return client.send(client.build_request(method, url, headers=headers), stream=True)
+        response = client.send(client.build_request(method, url, headers=headers), stream=True)
+        if self._retry_server_agent(asset, headers, response):
+            response.close()
+            headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+            return client.send(client.build_request(method, url, headers=headers), stream=True)
+        return response
 
     async def _request_async(self, asset: MediaAsset, method: str, headers: dict) -> httpx.Response:
         url = asset.url
@@ -171,7 +220,24 @@ class PlaybackBridge:
             url, client = resolved, self._local_media_client
         elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
             client = self._local_media_client
-        return await client.send(client.build_request(method, url, headers=headers), stream=True)
+        response = await client.send(client.build_request(method, url, headers=headers), stream=True)
+        if self._retry_server_agent(asset, headers, response):
+            with anyio.CancelScope(shield=True):
+                await response.aclose()
+            headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+            return await client.send(client.build_request(method, url, headers=headers), stream=True)
+        return response
+
+    @staticmethod
+    def _retry_server_agent(asset: MediaAsset, headers: dict, response: httpx.Response) -> bool:
+        if (
+            asset.redirectable and response.status_code in {401, 403}
+            and not asset.headers and "user-agent" in httpx.Headers(headers)
+        ):
+            asset.redirectable = False
+            record("media.redirect_skipped", parent_trace=asset.trace, reason="player_agent_rejected")
+            return True
+        return False
 
     @asynccontextmanager
     async def _media_request(self, asset: MediaAsset, method: str, headers: dict):
@@ -228,11 +294,14 @@ class PlaybackBridge:
         for name in ("range", "if-range"):
             if request_headers.get(name):
                 headers[name] = request_headers[name]
+        if asset.redirectable and request_headers.get("user-agent"):
+            headers["User-Agent"] = request_headers["user-agent"]
         return dict(headers)
 
     @staticmethod
     def _inspect_segment(asset: MediaAsset, probe: httpx.Response, first: bytes) -> None:
         asset.prefix = png_ts_offset(first)
+        asset.standard = not asset.prefix and standard_segment(first)
         bounds = content_range(probe.headers)
         if bounds is not None:
             asset.upstream_size = bounds[2]
@@ -272,6 +341,7 @@ class PlaybackBridge:
     def _segment_response(asset: MediaAsset, upstream, first: bytes, method: str) -> tuple[dict, int]:
         if asset.prefix is None:
             asset.prefix = png_ts_offset(first)
+            asset.standard = not asset.prefix and standard_segment(first)
             record("media.segment_inspected", parent_trace=asset.trace, bytes=asset.prefix)
         offset = asset.prefix
         bounds = content_range(upstream.headers)
@@ -301,22 +371,27 @@ class PlaybackBridge:
         return headers, strip
 
     def open_media(
-        self, asset: MediaAsset, method: str, request_headers: dict,
+        self, asset: MediaAsset, method: str, request_headers: dict, *, redirect: bool = False,
     ) -> httpx.Response:
         headers = self._media_headers(asset, request_headers)
         requested_range = request_headers.get("range", "")
         if asset.kind != "segment":
-            return self._request(asset, method, headers)
+            upstream = self._request(asset, method, headers)
+            result = self._redirect_response(asset, upstream) if redirect else None
+            if result is not None:
+                upstream.close()
+                return result
+            return upstream
         try:
             if (requested_range or method == "HEAD") and asset.prefix is None:
-                with closing(self._request(asset, "GET", {
-                    **asset.headers, "Accept-Encoding": "identity", "Range": "bytes=0-16383",
-                })) as probe:
+                with closing(self._request(asset, "GET", self._media_headers(asset, {
+                    **request_headers, "range": "bytes=0-16383",
+                }))) as probe:
                     if probe.status_code not in {200, 206}:
                         raise PlaybackError("segment_upstream_status")
                     first = next(probe.iter_bytes(16384), b"")
                     self._inspect_segment(asset, probe, first)
-            headers = self._segment_range_headers(asset, headers)
+            headers = self._segment_range_headers(asset, self._media_headers(asset, request_headers))
             if isinstance(headers, httpx.Response):
                 return headers
             upstream = self._request(asset, method, headers)
@@ -325,6 +400,10 @@ class PlaybackBridge:
             stream = upstream.iter_bytes(16384)
             first = next(stream, b"") if method != "HEAD" else b""
             response_headers, strip = self._segment_response(asset, upstream, first, method)
+            result = self._redirect_response(asset, upstream) if redirect else None
+            if result is not None:
+                upstream.close()
+                return result
             chunks = itertools.chain((first[strip:],), stream) if method != "HEAD" else iter(())
             return httpx.Response(
                 upstream.status_code, headers=response_headers,
@@ -339,20 +418,30 @@ class PlaybackBridge:
                 upstream.close()
             raise
 
-    async def open_media_async(self, asset: MediaAsset, method: str, request_headers: dict) -> httpx.Response:
+    async def open_media_async(
+        self, asset: MediaAsset, method: str, request_headers: dict, *, redirect: bool = False,
+    ) -> httpx.Response:
         headers = self._media_headers(asset, request_headers)
         if asset.kind != "segment":
-            return await self._request_async(asset, method, headers)
+            upstream = await self._request_async(asset, method, headers)
+            result = self._redirect_response(asset, upstream) if redirect else None
+            if result is not None:
+                with anyio.CancelScope(shield=True):
+                    await upstream.aclose()
+                return result
+            return upstream
         upstream = None
         try:
             if (request_headers.get("range") or method == "HEAD") and asset.prefix is None:
-                probe_headers = self._media_headers(asset, {"range": "bytes=0-16383"})
+                probe_headers = self._media_headers(asset, {
+                    **request_headers, "range": "bytes=0-16383",
+                })
                 async with self._media_request(asset, "GET", probe_headers) as probe:
                     if probe.status_code not in {200, 206}:
                         raise PlaybackError("segment_upstream_status")
                     first = await anext(probe.aiter_bytes(16384), b"")
                     self._inspect_segment(asset, probe, first)
-            headers = self._segment_range_headers(asset, headers)
+            headers = self._segment_range_headers(asset, self._media_headers(asset, request_headers))
             if isinstance(headers, httpx.Response):
                 return headers
             upstream = await self._request_async(asset, method, headers)
@@ -361,6 +450,11 @@ class PlaybackBridge:
             stream = upstream.aiter_bytes(16384)
             first = await anext(stream, b"") if method != "HEAD" else b""
             response_headers, strip = self._segment_response(asset, upstream, first, method)
+            result = self._redirect_response(asset, upstream) if redirect else None
+            if result is not None:
+                with anyio.CancelScope(shield=True):
+                    await upstream.aclose()
+                return result
 
             async def chunks():
                 if method != "HEAD":
@@ -513,6 +607,8 @@ class PlaybackBridge:
             parent = trace_id()
             now = time.monotonic()
             for node in nodes:
+                if not headers and self._direct_target(node.text.strip()):
+                    continue
                 key = self._put(MediaAsset(
                     None, node.text.strip(), dict(headers),
                     "application/octet-stream", parent, now,
@@ -553,6 +649,8 @@ class PlaybackBridge:
                     asset = self.get(node.text.rsplit("/", 1)[-1]) if node is not None else None
                     if asset is not None:
                         targets.append((content_type[:-1], asset.url, asset.headers))
+                    elif node is not None and urlsplit(node.text or "").scheme in {"http", "https"}:
+                        targets.append((content_type[:-1], node.text, payload.get("header") or {}))
         else:
             targets.append(("media", url, payload.get("header") or {}))
         results = []

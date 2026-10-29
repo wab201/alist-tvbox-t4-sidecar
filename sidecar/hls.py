@@ -14,6 +14,17 @@ class HlsError(ValueError):
     pass
 
 
+def standard_segment(data: bytes) -> bool:
+    """Recognize media that needs no server-side prefix removal."""
+    if len(data) >= 188 * 3 and all(data[n * 188] == 0x47 for n in range(3)):
+        return True
+    if len(data) >= 8 and data[4:8] in {b"ftyp", b"styp", b"moof", b"sidx"}:
+        return True
+    if len(data) >= 7 and data[0] == 0xFF and data[1] & 0xF6 == 0xF0:
+        return True
+    return data.startswith(b"WEBVTT")
+
+
 def png_ts_offset(data: bytes) -> int:
     """Recognize the observed PNG IDAT wrapper, never scan arbitrary payloads."""
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):

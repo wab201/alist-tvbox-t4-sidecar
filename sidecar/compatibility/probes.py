@@ -134,7 +134,9 @@ class ResourceProbes:
                     started = time.monotonic()
                     with closing(self.bridge.open_media(asset, "GET", {
                         "range": f"bytes={start}-{start + limit - 1}",
-                    })) as response:
+                    }, redirect=True)) as response:
+                        if response.status_code == 302:
+                            return self._fetch(response.headers["location"], limit=limit, start=start)
                         if response.status_code not in {200, 206}:
                             raise ProbeFailure("http_status", http_status=response.status_code)
                         data = bytearray()
