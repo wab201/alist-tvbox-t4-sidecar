@@ -23,9 +23,15 @@ class ManagedStreamingResponse(StreamingResponse):
         iterator = self.body_iterator
 
         async def tracked():
-            async for chunk in iterator:
-                yield chunk
-            self.reason = "complete"
+            try:
+                async for chunk in iterator:
+                    yield chunk
+                self.reason = "complete"
+            finally:
+                close = getattr(iterator, "aclose", None)
+                if close is not None:
+                    with anyio.CancelScope(shield=True):
+                        await close()
 
         self.body_iterator = tracked()
         await super().stream_response(send)
@@ -58,8 +64,13 @@ class ManagedStreamingResponse(StreamingResponse):
             # Closing must survive the cancellation used to stop the stream.
             try:
                 with anyio.CancelScope(shield=True):
-                    if self.upstream is not None:
-                        await self.upstream.aclose()
+                    try:
+                        close = getattr(self.body_iterator, "aclose", None)
+                        if close is not None:
+                            await close()
+                    finally:
+                        if self.upstream is not None:
+                            await self.upstream.aclose()
             finally:
                 elapsed = time.monotonic() - start
                 record(self.stage + ".closed", parent_trace=self.parent_trace, bytes=self.count,

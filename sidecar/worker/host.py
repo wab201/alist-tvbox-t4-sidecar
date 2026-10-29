@@ -4,17 +4,51 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import re
+import selectors
+import socket
 import sys
 import threading
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlsplit
 from sidecar.plugin_proxy import is_proxy_text
+from sidecar.resources import IdleMemory
 
 
 HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade",
 }
+
+
+class _ProxyServer(ThreadingHTTPServer):
+    """Block while idle; a control socket wakes shutdown without periodic polling."""
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self._wake_read, self._wake_write = socket.socketpair()
+        self._stopped = threading.Event()
+
+    def serve_forever(self, poll_interval=None):
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(self, selectors.EVENT_READ)
+                selector.register(self._wake_read, selectors.EVENT_READ)
+                while True:
+                    ready = selector.select()
+                    if any(key.fileobj is self._wake_read for key, _ in ready):
+                        return
+                    self._handle_request_noblock()
+        finally:
+            self._stopped.set()
+
+    def shutdown(self):
+        self._wake_write.sendall(b"x")
+        self._stopped.wait()
+
+    def server_close(self):
+        super().server_close()
+        self._wake_read.close()
+        self._wake_write.close()
 
 
 class PluginHost:
@@ -26,6 +60,7 @@ class PluginHost:
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._server_lock = threading.Lock()
+        self.memory = IdleMemory()
 
     @property
     def endpoint(self) -> str:
@@ -45,13 +80,21 @@ class PluginHost:
                     def log_message(self, *_):
                         pass
 
-                self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                self._server = _ProxyServer(("127.0.0.1", 0), Handler)
                 self._server.daemon_threads = True
                 self._thread = threading.Thread(
-                    target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
+                    target=self._server.serve_forever, daemon=True,
                 )
                 self._thread.start()
             return f"http://127.0.0.1:{self._server.server_port}/proxy"
+
+    @property
+    def started_endpoint(self) -> str | None:
+        with self._server_lock:
+            return (
+                f"http://127.0.0.1:{self._server.server_port}/proxy"
+                if self._server is not None else None
+            )
 
     def bind_base(self, spider_class) -> None:
         host = self
@@ -92,6 +135,10 @@ class PluginHost:
             self.cache.clear()
 
     def _serve(self, handler: BaseHTTPRequestHandler) -> None:
+        with self.memory.activity():
+            self._serve_active(handler)
+
+    def _serve_active(self, handler: BaseHTTPRequestHandler) -> None:
         body = None
         sent = False
         try:
@@ -121,7 +168,8 @@ class PluginHost:
             if isinstance(body, str):
                 body = body.encode("utf-8")
             if isinstance(body, (bytes, bytearray)):
-                body = bytes(body)
+                # Freeze mutable plugin buffers, but slice immutable bytes without copying.
+                body = memoryview(bytes(body))
                 headers = {key: value for key, value in headers.items() if key.lower() != "content-length"}
                 if status == 200 and handler.headers.get("Range") and not is_proxy_text(mime):
                     start, end = self._range(handler.headers["Range"], len(body))
@@ -139,7 +187,7 @@ class PluginHost:
                 headers["Content-Type"] = mime
             if body is None:
                 raise ValueError("missing localProxy body")
-            chunked = not isinstance(body, bytes) and not any(
+            chunked = not isinstance(body, memoryview) and not any(
                 key.lower() == "content-length" for key in headers
             )
             handler.send_response(status)
@@ -153,7 +201,7 @@ class PluginHost:
             handler.close_connection = True
             if handler.command == "HEAD":
                 return
-            if isinstance(body, bytes):
+            if isinstance(body, memoryview):
                 handler.wfile.write(body)
             else:
                 chunks = iter(lambda: body.read(65536), b"") if hasattr(body, "read") else iter(body)

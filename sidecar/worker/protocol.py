@@ -24,6 +24,7 @@ class WorkerResponse:
     ok: bool
     result: Any = None
     error: dict[str, Any] | None = None
+    proxy_url: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "WorkerResponse":
@@ -36,9 +37,13 @@ class WorkerResponse:
         error = payload.get("error")
         if error is not None and not isinstance(error, dict):
             raise ValueError("worker response error must be an object")
+        proxy_url = payload.get("proxy_url")
+        if proxy_url is not None and not isinstance(proxy_url, str):
+            raise ValueError("worker proxy URL must be a string")
         return cls(
             request_id=request_id,
             ok=ok,
             result=payload.get("result"),
             error=error,
+            proxy_url=proxy_url,
         )

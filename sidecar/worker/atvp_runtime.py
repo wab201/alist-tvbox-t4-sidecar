@@ -87,8 +87,16 @@ class AtvpRuntime:
         return {
             "result": self._json_value(result),
             "name": self._json_value(name),
-            **({"proxy_url": self._host.endpoint} if site_key else {}),
+            **({"proxy_url": self.proxy_endpoint} if self.proxy_endpoint else {}),
         }
+
+    @property
+    def proxy_endpoint(self) -> str | None:
+        return self._host.started_endpoint
+
+    @property
+    def memory(self):
+        return self._host.memory
 
     def _configure_server_proxy(self) -> None:
         spider = self._spider

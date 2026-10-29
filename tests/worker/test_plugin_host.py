@@ -198,3 +198,20 @@ def test_gate_cleanup_does_not_expire_interactive_proxy_and_loopback_ignores_env
     assert report["gate"]["passed"] is False
     assert client.get(home["proxy"]).content == b"0123456789"
     assert client.get(plugin["fm_path"]).json()["proxy"] == home["proxy"]
+
+
+def test_proxy_first_created_after_init_is_registered_and_reused(client):
+    from tests.worker.test_resource_lifecycle import SOURCE as LAZY_SOURCE
+    response = client.post("/t4/api/plugins/upload", files={"file": (
+        "lazy.py", LAZY_SOURCE.encode(),
+    )})
+    plugin = response.json()["plugin"]
+    home = client.get(plugin["fm_path"]).json()
+    assert home["count"] == 1
+    assert not client.app.state.playback._proxies._targets
+    play = client.get(plugin["fm_path"], params={"play": "episode"}).json()
+    url = play["url"]
+    assert url.startswith("https://public.example:15443/t4/proxy/")
+    assert client.get(url).content == b"retained-playback-state"
+    assert client.get(plugin["fm_path"], params={"play": "next"}).json()["url"] == url
+    assert client.get(plugin["fm_path"]).json()["count"] == 2

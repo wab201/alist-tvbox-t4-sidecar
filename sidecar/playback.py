@@ -78,6 +78,15 @@ class PlaybackBridge:
     def close(self) -> None:
         self.client.close()
         self._local_client.close()
+        with self._lock:
+            self._assets.clear()
+            self._size = 0
+
+    def prune_expired(self) -> int:
+        with self._lock:
+            before = self._size
+            self._prune()
+            return before - self._size
 
     async def aclose(self) -> None:
         try:

@@ -84,6 +84,14 @@ class T4Adapter:
         key = f"{source_id}:{plugin_id}"
         return self._plugin_locks.setdefault(key, asyncio.Lock())
 
+    def release_memory(self) -> int:
+        return self._opaque_ids.release_memory()
+
+    def close(self) -> None:
+        self._opaque_ids.close()
+        self._navigation_cards.clear()
+        self._catalog_metadata.clear()
+
     async def reset_plugin(self, source_id: str, plugin_id: str) -> None:
         for key in tuple(self._catalog_metadata):
             if key[:2] == (source_id, plugin_id):
@@ -570,6 +578,16 @@ class AtvpWorkerInvoker:
         if endpoint:
             self.proxies.remove(endpoint[1])
 
+    def _sync_proxy(self, runtime_key: str, endpoint: str | None = None) -> None:
+        current_endpoint = getattr(self._pool, "proxy_endpoint", None)
+        if current_endpoint is not None:
+            endpoint = current_endpoint(runtime_key) or endpoint
+        previous = self._proxy_endpoints.get(runtime_key)
+        if endpoint and (previous is None or previous[0] != endpoint):
+            self._remove_proxy(runtime_key)
+            key = self.proxies.register(endpoint, runtime_key, trace_id())
+            self._proxy_endpoints[runtime_key] = (endpoint, key)
+
     def close(self) -> None:
         """Close an idle batch runtime, including workers created by navigation."""
         self._pool.close()
@@ -601,13 +619,11 @@ class AtvpWorkerInvoker:
                     "init",
                     {"extend": extend, "site_key": runtime_key},
                 )
-                endpoint = (initialized or {}).get("proxy_url")
-                if endpoint:
-                    key = self.proxies.register(endpoint, runtime_key, trace_id())
-                    self._proxy_endpoints[runtime_key] = (endpoint, key)
+                self._sync_proxy(runtime_key, (initialized or {}).get("proxy_url"))
                 self._initialized[runtime_key] = extend
             try:
                 result = self._pool.request(runtime_key, method, params)
+                self._sync_proxy(runtime_key)
                 endpoint = self._proxy_endpoints.get(runtime_key)
                 if endpoint:
                     internal, key = endpoint

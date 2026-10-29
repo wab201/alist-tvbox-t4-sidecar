@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from sidecar.compatibility.runner import CompatibilityRunner
 from sidecar.gateway.routes.compatibility import build_compatibility_router
 from sidecar.gateway.routes.plugin_proxy import build_plugin_proxy_router
 from sidecar.plugin_proxy import PluginProxyRegistry
+from sidecar.resources import IdleMemory, ResourceActivityMiddleware
 
 
 def create_app(
@@ -130,14 +132,56 @@ def create_app(
         release_plugin=gate_adapter.reset_plugin if isinstance(gate_adapter, T4Adapter) else None,
         proxy_registry=proxies,
     )
+    memory = IdleMemory()
+    maintenance_stop = asyncio.Event()
+    adapters = (runtime_adapter,) if gate_adapter is runtime_adapter else (runtime_adapter, gate_adapter)
+
+    def reclaim_resources():
+        for pool in (worker_pool, gate_pool):
+            if pool is not None:
+                pool.reclaim_idle()
+
+        def cleanup():
+            count = playback.prune_expired()
+            for adapter in adapters:
+                if isinstance(adapter, T4Adapter):
+                    count += adapter.release_memory()
+            return count
+
+        result = memory.reclaim(cleanup=cleanup)
+        if result["reclaimed"]:
+            trace_store.emit(
+                "gateway.memory_reclaimed", count=result["released_entries"],
+                reason="trimmed" if result["trimmed"] else "collected",
+            )
+
+    async def memory_maintenance():
+        while True:
+            try:
+                await asyncio.wait_for(maintenance_stop.wait(), timeout=15)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await asyncio.to_thread(reclaim_resources)
+            except Exception as exc:
+                trace_store.emit("memory.reclaim_failed", error=type(exc).__name__)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        maintenance = asyncio.create_task(memory_maintenance())
         try:
             yield
         finally:
+            maintenance_stop.set()
+            await maintenance
             await compatibility.close()
             if worker_pool is not None:
                 worker_pool.close()
+            gate_invoker.close()
+            for adapter in adapters:
+                if isinstance(adapter, T4Adapter):
+                    adapter.close()
             if native_client is not None:
                 native_client.close()
             await playback.aclose()
@@ -155,8 +199,11 @@ def create_app(
     app.state.traces = trace_store
     app.state.playback = playback
     app.state.compatibility = compatibility
+    app.state.reclaim_resources = reclaim_resources
+    app.state.memory = memory
     app.include_router(build_plugin_proxy_router(proxies, proxy_client))
     app.add_middleware(TraceMiddleware, store=trace_store)
+    app.add_middleware(ResourceActivityMiddleware, memory=memory)
     app.include_router(build_diagnostics_router(trace_store, playback, runtime_adapter))
     app.include_router(build_compatibility_router(compatibility))
     app.include_router(build_health_router(runtime_settings))

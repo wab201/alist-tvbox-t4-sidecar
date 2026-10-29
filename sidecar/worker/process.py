@@ -27,6 +27,7 @@ def _response(
         "ok": error is None,
         "result": result,
         "error": error,
+        "proxy_url": ATVP_RUNTIME.proxy_endpoint,
     }
 
 
@@ -52,6 +53,13 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
 
     if method == "ping":
         return _response(request_id, result={"status": "ready"})
+    if method == "reclaim":
+        return _response(
+            request_id,
+            result=ATVP_RUNTIME.memory.reclaim(
+                idle_seconds=max(0.0, float(params.get("idle_seconds", 30))),
+            ),
+        )
     if method == "inspect":
         return _response(
             request_id,
@@ -172,13 +180,18 @@ def _handle(request: dict[str, Any]) -> dict[str, Any]:
 def _main(output) -> int:
     for line in sys.stdin:
         request_id = ""
+        request = None
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("request must be an object")
             if isinstance(request.get("id"), str):
                 request_id = request["id"]
-            response = _handle(request)
+            if request.get("method") == "reclaim":
+                response = _handle(request)
+            else:
+                with ATVP_RUNTIME.memory.activity():
+                    response = _handle(request)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             response = _response(
                 request_id,
@@ -193,6 +206,8 @@ def _main(output) -> int:
         # code pages and Linux UTF-8 locales.
         output.write(json.dumps(response, ensure_ascii=True) + "\n")
         output.flush()
+        # A blocking stdin read must not pin the previous catalog or play payload.
+        del response, request, line
     return 0
 
 
