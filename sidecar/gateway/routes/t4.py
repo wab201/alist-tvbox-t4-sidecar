@@ -30,12 +30,16 @@ def build_t4_router(
     ) -> dict[str, Any]:
         params = dict(request.query_params)
         if request.method == "POST":
-            try:
-                body = await request.json()
-            except ValueError:
-                body = {}
-            if isinstance(body, dict):
-                params.update(body)
+            content_type = request.headers.get("content-type", "").split(";", 1)[0]
+            if content_type in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+                params.update(dict(await request.form()))
+            else:
+                try:
+                    body = await request.json()
+                except ValueError:
+                    body = {}
+                if isinstance(body, dict):
+                    params.update(body)
         client_name = request.headers.get("X-CLIENT")
         if client_name and "client" not in params:
             params["client"] = client_name

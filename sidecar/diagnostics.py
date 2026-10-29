@@ -23,6 +23,7 @@ _FIELDS = {
     "level", "fingerprint", "session", "reason", "video", "audio",
     "root_error", "missing_module", "error_file", "error_function", "error_line",
     "errno", "winerror",
+    "mib_per_s",
 }
 _LABEL = re.compile(r"^[\w.:-]{1,100}$", re.UNICODE)
 _MIMES = {

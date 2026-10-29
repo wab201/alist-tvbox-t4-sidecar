@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
-import httpx
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from sidecar.diagnostics import TraceStore, record, trace_id
-from sidecar.playback import PlaybackBridge, PlaybackError
+from sidecar.playback import PlaybackBridge
+from sidecar.gateway.media_response import MediaResponse
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.worker.client import WorkerRemoteError
 
@@ -92,63 +90,6 @@ def build_diagnostics_router(
         if asset is None:
             record("media.expired", status=410)
             raise HTTPException(410, "播放清单已过期，请重新打开详情并播放")
-        if asset.kind == "hls":
-            try:
-                content = await asyncio.to_thread(bridge.render_hls, key, asset, str(request.base_url))
-            except (PlaybackError, httpx.HTTPError) as exc:
-                record("media.hls_failed", parent_trace=asset.trace, error=type(exc).__name__)
-                raise HTTPException(502, detail={"code": "hls_delivery_failed",
-                                               "message": "服务端 HLS 清单处理失败"}) from exc
-            return Response(
-                b"" if request.method == "HEAD" else content,
-                media_type="application/vnd.apple.mpegurl",
-                headers={"Cache-Control": "no-store", "Content-Length": str(len(content))},
-            )
-        if asset.content is not None:
-            record("media.manifest", parent_trace=asset.trace, bytes=len(asset.content))
-            return Response(
-                b"" if request.method == "HEAD" else asset.content,
-                media_type=asset.mime, headers={
-                    "Cache-Control": "no-store", "Content-Length": str(len(asset.content)),
-                },
-            )
-        start = time.monotonic()
-        try:
-            upstream = await asyncio.to_thread(
-                bridge.open_media, asset, request.method, dict(request.headers),
-            )
-        except (httpx.HTTPError, PlaybackError) as exc:
-            record("media.failed", parent_trace=asset.trace, error=type(exc).__name__)
-            raise HTTPException(502, "媒体上游连接失败，请查看链路日志") from exc
-        response_headers = {
-            name: upstream.headers[name] for name in (
-                "content-type", "content-length", "content-range", "accept-ranges",
-            ) if name in upstream.headers
-        }
-        response_headers["Cache-Control"] = "no-store"
-        response_headers.setdefault("content-type", asset.mime)
-        record("media.upstream", parent_trace=asset.trace, status=upstream.status_code,
-               range=bool(request.headers.get("range")),
-               duration_ms=round((time.monotonic() - start) * 1000))
-
-        def chunks():
-            count = 0
-            try:
-                if request.method != "HEAD":
-                    for chunk in upstream.iter_raw():
-                        count += len(chunk)
-                        yield chunk
-            except httpx.HTTPError as exc:
-                record("media.stream_failed", parent_trace=asset.trace, error=type(exc).__name__)
-                raise
-            finally:
-                upstream.close()
-                record("media.closed", parent_trace=asset.trace, bytes=count,
-                       duration_ms=round((time.monotonic() - start) * 1000))
-
-        return StreamingResponse(
-            chunks(), status_code=upstream.status_code, headers=response_headers,
-            background=BackgroundTask(upstream.close),
-        )
+        return MediaResponse(bridge, key, asset, request)
 
     return router

@@ -1,11 +1,10 @@
 # AList-TVBox T4 Sidecar
 
-当前版本：**0.2.3**。[版本记录](CHANGELOG.md) · [订阅兼容门禁](COMPATIBILITY_GATE.md)。
-本版修复我的云盘/AList 在影视请求 `ac=detail&ids=...` 后获取播放地址失败的问题。
-普通直链与必要请求头继续交给客户端；升级后重新打开详情获取新播放列表，统一订阅地址无需更换。
-2026-10-28 已发布镜像 `sha-bb19317` 并更新 NAS，健康检查和 24 组真实取链请求通过。
-详细身份与验收边界见版本日志，历史 `0.2.2` 的抽样不能代表本版客户端合同已通过。
-镜像构建与部署证据见版本日志；源码发布和真实兼容范围分别记录。
+当前版本：**0.3.0**。[版本记录](CHANGELOG.md) · [Docker/NAS 部署](NAS_DEPLOYMENT.md) · [源码构建](BUILDING.md)。
+本版加入按订阅选择的网盘服务端通路、可选 AT 内网回源、官方远程插件识别、
+PY/JS JSON 返回兼容和媒体断连释放。普通直链仍默认交给客户端，不转码。
+网盘公网中转不保证快于直链；原客户端完整性能对照与真机长播尚未完成。
+镜像身份、Linux 测试和 NAS 验证以版本记录为准，不能据单项功能推断全部插件兼容。
 真实订阅 178 条的检测结果和下一轮修复节点见 [兼容基线](COMPATIBILITY_BASELINE.md)；当前总门禁未放行。
 已复现的缺依赖、模块加载、请求头及图片检测问题，见 [失败根因与修复方案](FAILURE_ANALYSIS.md)。
 M16 已补齐依赖包上传、模块加载、Python 宿主代理、AES-128 检测及任务异常追溯。
@@ -13,6 +12,29 @@ M16 已补齐依赖包上传、模块加载、Python 宿主代理、AES-128 检�
 不能替代当前镜像的全订阅重测或 FM 真机验收，详见 [版本记录](CHANGELOG.md)。
 
 这是一个独立的附属容器，用于把已授权的 AList-TVBox（AT）订阅和 ATVP 插件运行时适配成只读 T4 接口。它不修改 AT 的 JAR、数据库、原始插件或前端文件，适合与 AT 并行部署在 NAS、家庭服务器或独立 Linux 主机上。
+
+## 核心目标
+
+**以原 AT 订阅的实际功能和性能为基线，将运行能力迁移到服务端，通过 T4 扩展跨平台使用，不以损失原有性能或兼容性换取接口可用。**
+原客户端的网盘分片加速属于需要迁移的能力，不能在返回直链后视为已经等价；
+客户端仍负责媒体解码和播放，服务端不转码、不重封装、不解码，也不增加额外 Token。
+复用 AT 后端或在 Sidecar 实现等价能力，必须由原版对照验证决定。
+
+这是验收目标，不是当前版本已全面达成的承诺。原生推送等客户端专属能力和未完成的加速、长播验证仍是跨平台缺口，
+不能用“已有原生透传”或“媒体字节可达”代替。执行顺序见 [项目计划](PROJECT_PLAN.md) 和 [M20 节点](IMPLEMENTATION_NODES.md#m20-原-at-订阅等价迁移与性能门禁)。
+
+固定参考 AT 官方 `1.121.0` 已加入服务端 Python 插件 Worker。本版可识别官方
+`/t4/{token}/v/{插件key}`，复用 AT 执行插件，不再误判为未知内置源，也不重复启动
+Sidecar Worker。原 `/sub`、PY/JS 上传和统一出口 `/t4/config.json` 保持不变，
+不要求新增 Token 或手工拼接插件地址。
+
+仍建议保留当前正常工作的输入：本轮只读核查中，现有 AT 实例的官方订阅入口返回
+404，没有升级 AT 或自动切换配置。只有实例本身已支持官方 T4，才可以把其完整订阅
+地址作为 source 输入；刷新 Sidecar 订阅只更新描述符，不保证重建 AT 内部的 Worker。
+官方 `1.121.0` 插件分派还存在搜索页码和播放 flag 未传入 Worker、独立 action/localProxy
+未暴露等限制，不能把 HTTP 接入当作全功能等价。详见
+[最新源码核查与实现记录](UPSTREAM_AT_T4_ANALYSIS.md#13-官方插件兼容落地)。
+同域名的 `/t4/` 整段反代仍会与官方入口冲突。
 
 ## 项目说明
 
@@ -26,6 +48,7 @@ T4 Sidecar Gateway
     ├─ 读取 AT 订阅地址
     ├─ 运行 raw Python / secspider 插件
     ├─ 调用 AT 内置服务端接口
+    ├─ 按官方 T4 描述符转发到 AT 的插件 Worker
     └─ 隔离 Worker、规范化响应、保护 opaque 播放 ID
     │
     ▼
@@ -47,6 +70,8 @@ AT 订阅和上游接口原有授权照常执行，不会因为取消 Sidecar �
 - 从 `ALIST_TVBOX_SUBSCRIPTION_URL` 读取 AT 完整订阅并自动建立 `env-at` source
 - ATVP raw Python 插件
 - 官方格式 `secspider/1` 插件
+- 官方 T4 远程插件：保持原站点 key 和顺序，自动生成 FM 地址，执行与生命周期归 AT
+- Python/JS 插件五动作支持 JSON 字符串返回；Atvp 内层在目录包装、过滤器和播放缓存前完成规范化
 - 自定义 `secspider/1` 动态 loader 和只读 keyring 回退
 - AT 内置源原生桥接：Bilibili、我的追更、AList、小雅、片单、直播、Emby、Jellyfin、飞牛、盘搜、Telegram 豆瓣、Telegram 频道、Telegram 网页
 - source 级 Worker 会话、超时回收和 opaque 详情/播放 ID
@@ -56,6 +81,7 @@ AT 订阅和上游接口原有授权照常执行，不会因为取消 Sidecar �
 - 播放链路诊断：请求、AT、Worker、解析、DASH 清单及媒体 Range 转发的关联日志与导出
 - 未声明客户端身份的播放请求使用普通视频模式，不再默认冒充支持 DASH 的 FongMi
 - 普通媒体直链和必要的 `header` 原样交给播放器，不因 MP4/MKV 后缀或请求头而强制中转
+- 可按 AT 订阅选择“直连 / 服务端加速”，复用 AT/PowerList 原有网盘配置；支持独立内网媒体回源，不新增分片器
 - HLS 网络交付支持清单、音轨、密钥与分片转发，以及已确认的 PNG/TS 传输包装去头；不改变音视频编码
 - 有界提取网页声明式媒体地址，不要求客户端执行爬虫或解析脚本
 - 全订阅兼容门禁：插件分类、首页、分类、搜索、详情、图片、解析及媒体字节检测，支持进度、停止和报告导出
@@ -80,6 +106,55 @@ http://NAS_IP:8765/t4/
 4. 上传的 Python/JS 文件或 ZIP 插件包直接显示在“本地插件”列表，每行都有管理按钮，悬停可查看名称。
 5. 直接点击页面顶部的“复制影视订阅地址”，在 FM 影视的点播配置中导入一次，即可显示所有可执行插件。
 6. 逐插件的“首页冒烟”和“复制插件 API”用于诊断或已有订阅配置的 `api` 字段，不是整包订阅。
+
+### 网盘服务端加速
+
+默认“直连”，普通播放地址和请求头仍交给客户端。需要把原设备端网盘代理能力移到服务端时：
+
+1. 在 Web 的“AT 订阅”下，将“网盘播放”改为“服务端加速”，点击“保存播放设置”。
+2. 若订阅走公网反代，而 Sidecar 与 AT 在同一 NAS 或局域网，可填一个可选的
+   “AT 内网地址”，例如 `http://at:4567` 或 `http://192.168.1.10:4567`。
+   填 AT 服务地址，不是 PowerList 端口、`/sub` 或 `/t4/` 地址；
+   反代有路径前缀时填写内网入口自身的前缀，例如 `http://at:4567/internal`。
+3. 保存后重新打开影片详情再播放。影视仍使用同一个 `/t4/config.json`，无需 JAR、
+   额外 Token、线程数、Cookie 或请求头配置。
+
+```text
+影视 → Sidecar /t4/media/ → AT /p（可走内网）→ PowerList → 网盘
+```
+
+只有 AT 实际返回、与该插件后端及凭证匹配的 `/p` 地址才接入此出口；
+不根据播放 ID 猜代理地址，不强制中转其他 CDN 直链。AT 决定哪些网盘启用代理，
+PowerList 继续使用 AT 已同步的并发、分片和多源配置，Sidecar 不再叠加下载线程。
+原有 `local_proxy_config` 仍传给插件和过滤器，仅在 ATVP 的后端播放请求上取消
+`client-proxy` 声明，并禁止搜索客户端本地代理端口。自定义插件自行请求的直链或
+硬编码代理逻辑不会被任意改写；官方 T4 远程插件仍由 AT 执行。
+
+必要媒体请求头留在服务端，客户端只访问 Sidecar 媒体地址并解码原始视频字节。
+HEAD、Range、If-Range、206/416、长度和校验标记透传；断连取消回源，不缓存整片，
+不转码、不重封装。字幕、进度、清晰度等原结果字段保持，不代表额外实现了其客户端能力。
+
+设置仅保存到 Sidecar 数据卷的 `/data/plugins/playback.json`，不改 AT 或只读 source 文件，
+重启后保留。多订阅独立设置；选择“直连”可恢复新取链的默认交付。
+切换不强制中断已发出的媒体会话。部署也可给环境 source 指定初始值：
+
+```dotenv
+T4_CLOUD_PLAYBACK_MODE=server
+ALIST_TVBOX_INTERNAL_URL=http://at:4567
+```
+
+Web 已保存的值优先。文件型 source 使用 `cloud_playback` 和 `at_internal_url`，
+示例见 `config/sources.example.json`。内网地址必须可从 Sidecar 容器访问；
+另一个容器的 `127.0.0.1` 不是 AT，不会自动扫描 Docker 或内网猜地址。
+
+日志 `playback.cloud_relay` 标明 `internal` 或 `subscription` 回源，
+`playback.cloud_direct` 表示 AT 没有返回符合条件的代理地址。
+`media.upstream` 和 `media.closed` 记录状态、字节、耗时及 `mib_per_s`；
+速率包含网络等待和客户端背压，不是保证吞吐或网盘限速突破。
+更换模式或内网地址后旧兼容报告标记“播放设置已变化”，需重新检测。
+
+服务端中转仍受 NAS 上行、反代和网盘限制。当前只完成本地合同和有限真实网盘抽样，
+不等于原版客户端加速性能、全部驱动或真机长播已通过。
 
 ### 在 FM 影视中使用
 
@@ -135,7 +210,8 @@ AT 设备发现、配对、推送入口及网盘授权仍由原版 AT 和影视�
 “媒体字节通过”只表示探测请求拿到可识别的数据，不代表手机已解码或长播成功。
 只有清单可达、未检查实际媒体的 HLS/外部 MPD 会单独标记“清单可达 · 媒体待验证”。
 HLS 网络标准化与内联 DASH 的 HTTP 出口记录 `media.*`；
-普通 MP4/MKV 等文件直链连同请求头交给客户端，不占用 NAS 的媒体中转带宽。
+默认模式下普通 MP4/MKV 等文件直链连同请求头交给客户端，不占用 NAS 的媒体中转带宽；
+显式启用网盘服务端加速且 AT 返回 `/p` 时，才通过 Sidecar 的媒体出口传输。
 `probe.*` 是独立诊断探测，不是客户端播放事件。`at.response` 的 HTTP 状态可用于区分 AT
 请求失败；`worker.failed/timeout` 用于定位插件运行问题；`media.upstream/stream_failed`
 用于定位媒体转发、Range 或传输中断。`playback.server_parser_complete/failed`、
@@ -340,6 +416,12 @@ Python 插件的宿主代理已接入：`getProxyUrl()`、运行时 `siteKey`、
 流对象的定位/Range 仍由插件实现，不承诺任意流都支持快进。
 缓存仅属于当前插件 Worker，最多 512 项，不跨容器重启保存。
 
+本地未发布候选已将媒体和插件代理转为可取消的异步流：播放器退出、切集或中断请求后，
+Sidecar 取消该请求的上游读取并回收连接，不等待整个视频下载，也不占用一个读取线程。
+普通文件仍返回原直链和必要请求头，不强制经过 Sidecar。该改进不等于新增并发网盘加速。
+日志中的 `media.closed` / `proxy.closed` 会记录 `complete`、`client_disconnect` 或
+`upstream_error`；失效签名需重新取链，不盲目重放原播放动作。
+
 刷新、删除或重启对应 Worker 后，旧代理地址返回 `410`，重新打开分类/详情即可取得新地址。
 这里的会话标识用于找到运行实例，不是新增鉴权，也不需要复制或填写。
 只给出客户端硬编码代理地址、未实现 `localProxy`、缺少配套源码的插件仍需单独适配。
@@ -373,48 +455,45 @@ GET    /t4/api/sources/{source}/subscription?refresh=true
 
 ## NAS 部署
 
-完整的中文步骤、GHCR 登录、环境变量、升级、回滚、同源代理和故障排查请看：
+完整的中文步骤、镜像下载、环境变量、升级、回滚、同源代理和故障排查请看：
 
 **[NAS_DEPLOYMENT.md](NAS_DEPLOYMENT.md)**
 
 快速流程如下：
 
 ```bash
-mkdir -p /volume1/docker/alist-tvbox-t4-sidecar
-cd /volume1/docker/alist-tvbox-t4-sidecar
-# 从本地仓库上传 docker-compose.yml 和 .env.example，再复制：
+git clone https://github.com/wab201/alist-tvbox-t4-sidecar.git
+cd alist-tvbox-t4-sidecar
 cp .env.example .env
+chmod 600 .env
 # 编辑 .env，填写 ALIST_TVBOX_SUBSCRIPTION_URL
 docker compose config --quiet
-docker compose pull
-docker compose up -d
+docker compose pull t4-sidecar
+docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-当前仓库为私有仓库，不能匿名使用 `raw.githubusercontent.com` 下载文件。
-也可以在已经完成 GitHub 认证的 NAS 上克隆仓库，再进入项目目录执行上述命令。
+源码仓库公开后可以匿名克隆。GitHub 仓库与 GHCR 包的可见性独立；
+若拉取镜像返回 `denied`，可按 NAS 指南导入公开 Release 中的同次构建镜像，
+不需要给 Sidecar 配置 GitHub 凭证，也可以从源码自行构建。
 
 当前 GHCR 镜像：
 
 ```text
 ghcr.io/wab201/alist-tvbox-t4-sidecar:latest
+ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.0
 ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-<提交短 SHA>
 ```
 
-私有 GHCR 包需要在 NAS 单独执行 `docker login ghcr.io`。登录令牌只用于 Docker 凭证存储，不放入项目 `.env`。
+镜像归档包含 `SHA256SUMS` 与 `image-id.json`；固定版本部署比跟随 `latest` 更易复现。
 
 ## 本地开发
 
-```powershell
-python -m pytest -q
-python -m uvicorn sidecar.gateway.main:app --host 127.0.0.1 --port 8765
-```
-
-开发容器：
-
-```powershell
-Copy-Item .env.example .env
-docker compose up --build -d t4-sidecar
-```
+先安装 Python 3.11+ 和 Node.js，创建虚拟环境，再执行
+`python -m pip install -e ".[test]"`。按平台设置可写的 `T4_PLUGIN_DIR`、
+`T4_LOG_FILE` 与 `T4_COMPATIBILITY_REPORT`，随后运行
+`python -m pytest` 或启动 Uvicorn。
+完整的 Windows/Linux 命令、源码 Docker 构建、wheel 打包及运行时资源检查见
+[源码构建指南](BUILDING.md)。`.env` 由 Compose 读取，直接运行 Python 不会自动加载该文件。
 
 ## T4 调用示例
 

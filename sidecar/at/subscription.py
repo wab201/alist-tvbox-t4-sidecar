@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 
@@ -27,7 +27,7 @@ class PluginDescriptor:
     source: str
     loader: str
     raw: bool
-    token: str
+    token: str = field(repr=False)
     secret: str
     local_proxy_config: Any
     data: Any
@@ -39,8 +39,9 @@ class PluginDescriptor:
     home_page: str = ""
     site_options: dict[str, Any] = field(default_factory=dict)
     native_client_site: dict[str, Any] = field(default_factory=dict)
+    t4_endpoint: str = field(default="", repr=False)
 
-    def worker_extend(self) -> str:
+    def worker_extend(self, *, server_proxy: bool = False) -> str:
         payload: dict[str, Any] = {
             "api": self.backend_api or self.api,
             "source": self.source,
@@ -54,6 +55,8 @@ class PluginDescriptor:
             payload["data"] = self.data
         if self.filters:
             payload["filters"] = list(self.filters)
+        if server_proxy:
+            payload["_t4_server_proxy"] = True
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
@@ -66,15 +69,26 @@ class PluginDescriptor:
             "raw": self.raw,
             "filters": len(self.filters),
         }
-        if self.plugin_type == "builtin":
+        if self.plugin_type == "official_t4":
+            metadata.update(
+                transport="official_t4",
+                execution_owner="at",
+                compatibility_mode="official_remote_plugin",
+                capabilities=["home", "category", "search", "detail", "play"],
+            )
+        elif self.plugin_type == "builtin":
             route = _builtin_route(self.api)
             if route:
                 metadata["native_route"] = route
+                if self.t4_endpoint:
+                    metadata["transport"] = "official_t4"
                 capabilities = ["home", "category", "search", "detail", "play"]
                 if self.api == "csp_PianDan":
                     metadata["delegated_capabilities"] = ["detail", "play"]
                     metadata["compatibility_mode"] = "title_search_navigation"
-                elif self.api == "csp_Media":
+                elif self.api == "csp_Media" or (
+                    self.t4_endpoint and self.api == "csp_Live"
+                ):
                     capabilities.append("action")
                 metadata["capabilities"] = capabilities
             elif self.api == "csp_Push":
@@ -261,6 +275,34 @@ def _builtin_route(api: str) -> str | None:
     }.get(api)
 
 
+def _official_t4_api(endpoint: str, at_base_url: str, plugin_id: str) -> str:
+    """Resolve AT's builtin identity or exact plugin key without exposing the URL."""
+    try:
+        same_origin = _same_origin(endpoint, at_base_url)
+    except (SubscriptionParseError, ValueError) as exc:
+        raise SubscriptionParseError("official T4 api must be an absolute http(s) URL") from exc
+    if not same_origin:
+        raise SubscriptionParseError("official T4 api is outside the configured AT origin")
+    parsed = urlsplit(endpoint)
+    prefix = urlsplit(at_base_url).path.rstrip("/") + "/t4/"
+    parts = parsed.path[len(prefix):].split("/") if parsed.path.startswith(prefix) else []
+    if (
+        parsed.query or parsed.fragment or len(parts) != 3
+        or parts[0] in {"", ".", ".."} or parts[1] != "v"
+    ):
+        raise SubscriptionParseError("official T4 api path is not an AT endpoint")
+    site = unquote(parts[2])
+    if not site or site in {".", ".."} or "/" in site or "\\" in site:
+        raise SubscriptionParseError("official T4 api has an invalid site key")
+    api = site if site.startswith("csp_") else "csp_" + site
+    if _builtin_route(api):
+        return api
+    # Official plugins use externalId verbatim, falling back to plugin-{id}.
+    if site != plugin_id:
+        raise SubscriptionParseError("official T4 api does not match the plugin key")
+    return site
+
+
 class SubscriptionParser:
     def __init__(self, at_base_url: str) -> None:
         self._at_base_url = at_base_url.rstrip("/")
@@ -299,9 +341,18 @@ class SubscriptionParser:
         if not isinstance(site, dict):
             raise SubscriptionParseError("site must be an object")
 
-        ext_value = site.get("ext")
-        ext = decode_ext(ext_value) if ext_value is not None else {}
+        name = str(site.get("name") or site.get("key") or f"site-{index}")
+        plugin_id = str(site.get("key") or f"site-{index}")
         api = str(site.get("api") or "").strip()
+        t4_endpoint = ""
+        if site.get("type") in (4, "4"):
+            t4_endpoint = api
+            api = _official_t4_api(t4_endpoint, self._at_base_url, plugin_id)
+        # A remote T4's ext is not an ATVP loader payload; AT owns its execution.
+        ext_value = site.get("ext") if not t4_endpoint else None
+        ext = decode_ext(ext_value) if ext_value is not None else {}
+        # _official_t4_api has already verified the /t4/{token}/v/{key} shape.
+        token = unquote(urlsplit(t4_endpoint).path.split("/")[-3]) if t4_endpoint else str(ext.get("token") or "")
         source = str(ext.get("source") or "").strip()
         loader = str(ext.get("loader") or "").strip()
         raw = ext.get("raw") is True
@@ -314,8 +365,6 @@ class SubscriptionParser:
         if not _same_origin(backend_api, self._at_base_url):
             raise SubscriptionParseError("AT backend api is outside the configured AT origin")
 
-        name = str(site.get("name") or site.get("key") or f"site-{index}")
-        plugin_id = str(site.get("key") or f"site-{index}")
         filters = ext.get("filters", [])
         if not isinstance(filters, list):
             raise SubscriptionParseError("plugin filters must be a list")
@@ -337,12 +386,15 @@ class SubscriptionParser:
         return PluginDescriptor(
             plugin_id=plugin_id,
             name=name,
-            plugin_type=_classify_plugin(api, source, raw, loader),
+            plugin_type=(
+                ("builtin" if _builtin_route(api) else "official_t4")
+                if t4_endpoint else _classify_plugin(api, source, raw, loader)
+            ),
             api=api,
             source=source,
             loader=loader,
             raw=raw,
-            token=str(ext.get("token") or ""),
+            token=token,
             secret=str(ext.get("secret") or ""),
             local_proxy_config=ext.get("local_proxy_config"),
             data=ext.get("data"),
@@ -361,6 +413,7 @@ class SubscriptionParser:
                 if key in site
             },
             native_client_site=native_client_site,
+            t4_endpoint=t4_endpoint,
         )
 
 

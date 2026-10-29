@@ -70,10 +70,10 @@ def rewrite_proxy_urls(value: Any, internal: str, public: str) -> Any:
     return value
 
 
-def rewrite_chunks(chunks, internal: bytes, public: bytes):
+async def rewrite_chunks(chunks, internal: bytes, public: bytes):
     """Replace endpoints even when a URL crosses an upstream chunk boundary."""
     pending = b""
-    for chunk in chunks:
+    async for chunk in chunks:
         pending += chunk
         while True:
             index = pending.find(internal)

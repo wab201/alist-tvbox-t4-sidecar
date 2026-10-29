@@ -4,6 +4,29 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+
+def validate_cloud_playback(mode: str, internal_url: str | None) -> None:
+    if not isinstance(mode, str) or mode not in {"direct", "server"}:
+        raise ValueError("播放模式只能是 direct 或 server")
+    if not internal_url:
+        return
+    if not isinstance(internal_url, str):
+        raise ValueError("AT 内网地址必须是字符串")
+    try:
+        parsed = urlsplit(internal_url)
+        valid = (
+            parsed.scheme in {"http", "https"} and parsed.hostname
+            and not parsed.username and not parsed.password
+            and not parsed.query and not parsed.fragment
+            and not any(char.isspace() for char in internal_url)
+        )
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("AT 内网地址需为 HTTP(S) 服务地址，不能包含凭证、查询参数或片段")
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +39,11 @@ class SourceConfig:
     subscription_id: str | None = None
     subscription_token: str | None = None
     subscription_url: str | None = None
+    cloud_playback: str = "direct"
+    at_internal_url: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_cloud_playback(self.cloud_playback, self.at_internal_url)
 
     def public_metadata(self) -> dict[str, Any]:
         return {
@@ -100,6 +128,8 @@ class SourceRegistry:
             subscription_id=subscription_id,
             subscription_token=subscription_token,
             subscription_url=subscription_url,
+            cloud_playback=item.get("cloud_playback", "direct"),
+            at_internal_url=item.get("at_internal_url"),
         )
 
     def public_metadata(self) -> list[dict[str, Any]]:

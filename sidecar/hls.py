@@ -5,6 +5,7 @@ import zlib
 from typing import Callable
 from urllib.parse import urljoin, urlsplit
 
+import anyio
 import httpx
 import m3u8
 
@@ -110,3 +111,20 @@ class ClosingStream(httpx.SyncByteStream):
 
     def close(self) -> None:
         self._close()
+
+
+class AsyncClosingStream(httpx.AsyncByteStream):
+    def __init__(self, chunks, close) -> None:
+        self.chunks = chunks
+        self._close = close
+
+    async def __aiter__(self):
+        try:
+            async for chunk in self.chunks:
+                yield chunk
+        finally:
+            await self.aclose()
+
+    async def aclose(self) -> None:
+        with anyio.CancelScope(shield=True):
+            await self._close()

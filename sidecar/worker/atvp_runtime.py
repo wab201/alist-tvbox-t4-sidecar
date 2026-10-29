@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ast
 import contextlib
+from functools import wraps
 import importlib.util
 import json
 import os
@@ -19,6 +20,12 @@ from urllib.parse import urlsplit
 
 import requests
 from sidecar.worker.host import PluginHost
+
+
+JSON_RESULT_METHODS = (
+    "homeContent", "homeVideoContent", "categoryContent",
+    "detailContent", "searchContent", "playerContent",
+)
 
 
 class AtvpRuntimeError(RuntimeError):
@@ -67,12 +74,32 @@ class AtvpRuntime:
 
         with self._quiet_stdout():
             result = self._spider.init(extend)
+            if payload.get("_t4_server_proxy") is True:
+                self._configure_server_proxy()
             name = self._spider.getName()
         return {
             "result": self._json_value(result),
             "name": self._json_value(name),
             **({"proxy_url": self._host.endpoint} if site_key else {}),
         }
+
+    def _configure_server_proxy(self) -> None:
+        spider = self._spider
+        if not hasattr(spider, "_load_inner_spider_class"):
+            return
+        endpoint = spider._build_backend_endpoint("play")
+        fetch = spider.fetch
+
+        def server_fetch(url, *args, **kwargs):
+            if url == endpoint:
+                kwargs["params"] = {**(kwargs.get("params") or {}), "type": ""}
+            return fetch(url, *args, **kwargs)
+
+        # Keep driver settings available to the inner spider and its filters.
+        # Suppress only the ATVP device-proxy handoff, not plugin capabilities.
+        spider.fetch = server_fetch
+        if hasattr(spider, "_resolve_local_proxy_base"):
+            spider._resolve_local_proxy_base = lambda: None
 
     def local_proxy(self, params: dict[str, Any]) -> Any:
         if self._spider is None:
@@ -147,9 +174,12 @@ class AtvpRuntime:
             self._base_modules = None
 
     def _invoke(self, method_name: str, *args: Any) -> Any:
+        normalize = (
+            self._plugin_result if method_name in JSON_RESULT_METHODS else self._json_value
+        )
         if self._js_process is not None:
             try:
-                return self._json_value(
+                return normalize(
                     self._js_request(method_name, list(args))
                 )
             except AtvpRuntimeError:
@@ -165,7 +195,7 @@ class AtvpRuntime:
             raise AtvpRuntimeError(f"Atvp method is unavailable: {method_name}")
         try:
             with self._quiet_stdout():
-                return self._json_value(method(*args))
+                return normalize(method(*args))
         except AtvpRuntimeError:
             raise
         except Exception as exc:
@@ -229,6 +259,16 @@ class AtvpRuntime:
                 str(error.get("message") or "JavaScript plugin rejected request")
             )
         return response.get("result")
+
+    @staticmethod
+    def _plugin_result(value: Any) -> Any:
+        # TVBox spiders may return a JSON string instead of a Python object.
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        return AtvpRuntime._json_value(value)
 
     @staticmethod
     def _json_value(value: Any) -> Any:
@@ -342,6 +382,17 @@ class AtvpRuntime:
                 self._category_filter_mode = self._filter_mode(source_text)
                 inner_class = original(instance, source_text)
                 inner_class.siteKey = self._host.site_key
+                # Decode before Atvp applies category wrapping, filters and play caches.
+                def normalize_result(method):
+                    @wraps(method)
+                    def invoke(*args, **kwargs):
+                        return self._plugin_result(method(*args, **kwargs))
+                    return invoke
+
+                for name in JSON_RESULT_METHODS:
+                    method = getattr(inner_class, name, None)
+                    if callable(method):
+                        setattr(inner_class, name, normalize_result(method))
                 return inner_class
 
             spider_class._load_inner_spider_class = load_inner

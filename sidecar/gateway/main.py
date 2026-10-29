@@ -16,6 +16,7 @@ from sidecar.gateway.routes.subscriptions import (
     SubscriptionFetcher,
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
+from sidecar.gateway.playback_settings import PlaybackSettingsStore
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
 from sidecar.gateway.routes.fm import build_fm_router
@@ -44,7 +45,7 @@ def create_app(
     trace_store = TraceStore(runtime_settings.log_file)
     proxies = PluginProxyRegistry()
     playback = PlaybackBridge(proxy_registry=proxies)
-    proxy_client = httpx.Client(trust_env=False, timeout=httpx.Timeout(25, connect=3))
+    proxy_client = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(25, connect=3))
     if source_registry is not None:
         runtime_sources = source_registry
     else:
@@ -65,6 +66,8 @@ def create_app(
                         status="configured",
                         capabilities=("subscription", "t4"),
                         subscription_url=runtime_settings.subscription_url,
+                        cloud_playback=runtime_settings.cloud_playback,
+                        at_internal_url=runtime_settings.at_internal_url,
                     ),
                 )
             )
@@ -74,6 +77,9 @@ def create_app(
     )
     if upload_store.has_plugins():
         runtime_sources.upsert(upload_store.source_config)
+    playback_settings = PlaybackSettingsStore(
+        runtime_sources, Path(runtime_settings.plugin_dir) / "playback.json",
+    )
     subscription_resolver = CachedSubscriptionResolver(
         subscription_fetcher,
         ttl=runtime_settings.subscription_cache_ttl,
@@ -92,6 +98,7 @@ def create_app(
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,
             native_invoker=NativeAtInvoker(native_client),
+            playback_bridge=playback,
         )
     else:
         runtime_adapter = t4_adapter
@@ -108,6 +115,7 @@ def create_app(
         subscription_resolver=frozen_gate_snapshot,
         local_snapshot_provider=upload_store.snapshot_for,
         native_invoker=NativeAtInvoker(native_client) if native_client is not None else None,
+        playback_bridge=playback,
     ) if t4_adapter is None else t4_adapter
 
     async def gate_snapshot(source):
@@ -132,8 +140,9 @@ def create_app(
                 worker_pool.close()
             if native_client is not None:
                 native_client.close()
+            await playback.aclose()
             playback.close()
-            proxy_client.close()
+            await proxy_client.aclose()
             trace_store.close()
 
     app = FastAPI(
@@ -151,7 +160,7 @@ def create_app(
     app.include_router(build_diagnostics_router(trace_store, playback, runtime_adapter))
     app.include_router(build_compatibility_router(compatibility))
     app.include_router(build_health_router(runtime_settings))
-    app.include_router(build_sources_router(runtime_sources))
+    app.include_router(build_sources_router(runtime_sources, playback_settings))
     app.include_router(
         build_client_config_router(
             runtime_sources,

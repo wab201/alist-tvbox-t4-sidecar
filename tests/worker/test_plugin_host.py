@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
@@ -167,8 +168,14 @@ def test_host_stream_is_closed_and_server_stops():
 @pytest.mark.parametrize("size", [1, 2, 6, 7, 8, 30])
 def test_rewrite_handles_urls_split_across_stream_chunks(size):
     raw = b"prefix http://worker/path middle http://worker/path suffix"
-    chunks = (raw[n:n + size] for n in range(0, len(raw), size))
-    assert b"".join(rewrite_chunks(chunks, b"http://worker/path", b"https://public/path")) == (
+    async def run():
+        async def chunks():
+            for n in range(0, len(raw), size):
+                yield raw[n:n + size]
+        return b"".join([
+            part async for part in rewrite_chunks(chunks(), b"http://worker/path", b"https://public/path")
+        ])
+    assert asyncio.run(run()) == (
         raw.replace(b"http://worker/path", b"https://public/path")
     )
 

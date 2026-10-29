@@ -50,6 +50,8 @@
     .source:first-child { border-top: 0; }
     .source-head h2 { font-size: 15px; }
     .source-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
+    .playback-controls { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr) auto; gap: 10px; align-items: end; margin-top: 14px; }
+    .playback-state { margin-top: 6px; min-height: 21px; overflow-wrap: anywhere; }
     .fm-entry { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     .fm-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
     .snapshot { margin-top: 12px; padding: 12px; background: #e9eef3; max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
@@ -86,7 +88,7 @@
       header { align-items: start; } h1 { font-size: 21px; }
       .plugin-row { grid-template-columns: 24px minmax(0, 1fr); padding: 12px; }
       .row-actions { grid-column: 2; justify-content: flex-start; }
-      .controls, .source-controls, .entry-grid, .diagnostic-controls { grid-template-columns: 1fr; }
+      .controls, .source-controls, .entry-grid, .diagnostic-controls, .playback-controls { grid-template-columns: 1fr; }
       .trace-controls { grid-template-columns: minmax(0, 1fr) auto auto; }
       .trace-controls > label:first-child { grid-column: 1 / -1; }
       .fm-entry { flex-wrap: wrap; } .fm-entry code { flex-basis: 100%; }
@@ -197,7 +199,7 @@
   const selectedSites = new Map();
   const diagnosticSources = new Map();
   const gateNames = {pass: "通过", fail: "失败", blocked: "受阻", unsupported: "不适用", not_tested: "未测试"};
-  const gateTypes = {builtin: "AT 内置", raw_python: "Python", secspider: "加密插件", javascript: "JavaScript",
+  const gateTypes = {builtin: "AT 内置", official_t4: "AT 远程插件", official_remote_plugin: "AT 远程插件", raw_python: "Python", secspider: "加密插件", javascript: "JavaScript",
     title_search_navigation: "片单导航", native_client_passthrough: "原生客户端", page_entry_only: "页面入口",
     unsupported_runtime: "未支持运行时", unmapped_builtin: "未映射内置源", invalid_descriptor: "订阅解析失败"};
   const gateStageNames = {home: "首页", category: "分类", search: "搜索", detail: "详情", image: "图片", play: "解析", media: "媒体"};
@@ -212,6 +214,7 @@
     $("#gate-state").textContent = !report ? "未检测" : report.state === "running" ? "检测中"
       : report.state === "cancelling" ? "正在停止" : report.gate.passed ? "抽样门禁通过 · 真机待验证"
       : report.state === "cancelled" ? "已停止 · 未放行" : report.state === "interrupted" ? "上次任务中断"
+      : report.playback_current === false ? "播放设置已变化 · 需重测"
       : report.artifact_current === false ? "代码已变化 · 需重测" : "未放行";
     if (!report) return;
     $("#gate-summary").textContent = `v${report.artifact.version} · ${report.progress.completed}/${report.progress.total} 个插件 · `
@@ -547,6 +550,41 @@
       const copy = iconButton("copy", "复制插件 API", "copy-fm");
       const refresh = iconButton("refresh-cw", "读取能力", "snapshot");
       article.querySelector(".toolbar").append(refresh, smoke, copy);
+      const playbackForm = document.createElement("form");
+      playbackForm.className = "playback-controls";
+      playbackForm.innerHTML = '<label>网盘播放<select><option value="direct">直连</option><option value="server">服务端加速</option></select></label><label>AT 内网地址（可选）<input type="url" placeholder="http://at:4567" autocomplete="off"></label>';
+      const mode = playbackForm.querySelector("select");
+      const internal = playbackForm.querySelector("input");
+      const savePlayback = iconButton("save", "保存播放设置", "save-playback");
+      savePlayback.type = "submit";
+      savePlayback.disabled = true;
+      playbackForm.append(savePlayback);
+      const playbackState = document.createElement("div");
+      playbackState.className = "playback-state muted";
+      playbackState.setAttribute("role", "status");
+      article.append(playbackForm, playbackState);
+      mode.disabled = internal.disabled = true;
+      const playbackPath = `/t4/api/sources/${encodeURIComponent(source.id)}/playback`;
+      mode.onchange = () => { internal.disabled = mode.value !== "server"; };
+      playbackForm.onsubmit = async event => {
+        event.preventDefault();
+        mode.disabled = internal.disabled = savePlayback.disabled = true;
+        try {
+          const value = await request(playbackPath, jsonOptions("PUT", {
+            mode: mode.value, at_internal_url: internal.value.trim(),
+          }));
+          mode.value = value.mode;
+          internal.value = value.at_internal_url;
+          playbackState.textContent = "已保存 · 重新打开详情后播放";
+          setStatus("网盘播放设置已保存，影视订阅地址不变", "ok");
+        } catch (error) {
+          playbackState.textContent = error.message;
+          setStatus(error.message, "error");
+        } finally {
+          mode.disabled = savePlayback.disabled = false;
+          mode.onchange();
+        }
+      };
       smoke.disabled = copy.disabled = true;
       let items = [];
       const selected = () => items.find(plugin => plugin.id === select.value);
@@ -611,6 +649,15 @@
         finally { smoke.disabled = !selected()?.fm_path; }
       };
       sourcesNode.append(article);
+      try {
+        const value = await request(playbackPath);
+        mode.value = value.mode;
+        internal.value = value.at_internal_url;
+        mode.disabled = savePlayback.disabled = false;
+        mode.onchange();
+      } catch (error) {
+        playbackState.textContent = error.message;
+      }
       await load(force);
     }));
   }

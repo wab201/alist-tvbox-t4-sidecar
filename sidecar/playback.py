@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections import OrderedDict
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 import hashlib
 import itertools
@@ -11,13 +11,16 @@ import secrets
 import threading
 import time
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
+import anyio
 import httpx
 from lxml import etree
 
 from sidecar.diagnostics import record, trace_id
-from sidecar.hls import ClosingStream, HlsError, content_range, png_ts_offset, rewrite_manifest
+from sidecar.hls import (
+    AsyncClosingStream, ClosingStream, HlsError, content_range, png_ts_offset, rewrite_manifest,
+)
 from sidecar.server_parser import ServerParseError, resolve_page
 
 
@@ -39,6 +42,7 @@ class MediaAsset:
     children: dict[str, MediaAsset] = field(default_factory=dict)
     prefix: int | None = None
     upstream_size: int | None = None
+    local_transport: bool = False
 
 
 class PlaybackBridge:
@@ -57,6 +61,14 @@ class PlaybackBridge:
             transport=transport, trust_env=False, timeout=httpx.Timeout(25, connect=3),
             follow_redirects=True,
         )
+        self.media_client = httpx.AsyncClient(
+            transport=transport, timeout=httpx.Timeout(25, connect=10),
+            follow_redirects=True,
+        )
+        self._local_media_client = httpx.AsyncClient(
+            transport=transport, trust_env=False, timeout=httpx.Timeout(25, connect=3),
+            follow_redirects=True,
+        )
         self._proxies = proxy_registry
         self._lock = threading.RLock()
         self._capacity = capacity
@@ -66,6 +78,12 @@ class PlaybackBridge:
     def close(self) -> None:
         self.client.close()
         self._local_client.close()
+
+    async def aclose(self) -> None:
+        try:
+            await self.media_client.aclose()
+        finally:
+            await self._local_media_client.aclose()
 
     def _evict(self) -> None:
         while self._size > self._capacity:
@@ -118,6 +136,7 @@ class PlaybackBridge:
                 root.children[child] = MediaAsset(
                     None, url, root.headers, "application/octet-stream",
                     root.trace, time.monotonic(), kind,
+                    local_transport=root.local_transport,
                 )
                 self._size += 1
             root.created = time.monotonic()
@@ -131,9 +150,39 @@ class PlaybackBridge:
         resolved = self._proxies.resolve(url) if self._proxies is not None else None
         if resolved is not None:
             url, client = resolved, self._local_client
-        elif urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
+        elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
             client = self._local_client
         return client.send(client.build_request(method, url, headers=headers), stream=True)
+
+    async def _request_async(self, asset: MediaAsset, method: str, headers: dict) -> httpx.Response:
+        url = asset.url
+        client = self.media_client
+        resolved = self._proxies.resolve(url) if self._proxies is not None else None
+        if resolved is not None:
+            url, client = resolved, self._local_media_client
+        elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
+            client = self._local_media_client
+        return await client.send(client.build_request(method, url, headers=headers), stream=True)
+
+    @asynccontextmanager
+    async def _media_request(self, asset: MediaAsset, method: str, headers: dict):
+        response = await self._request_async(asset, method, headers)
+        try:
+            yield response
+        finally:
+            with anyio.CancelScope(shield=True):
+                await response.aclose()
+
+    def _rewrite_hls(self, key: str, asset: MediaAsset, base: str, response, content: bytes) -> bytes:
+        try:
+            result = rewrite_manifest(
+                content, str(response.url),
+                lambda url, kind: self._hls_child(key.partition("~")[0], url, kind, base),
+            )
+        except HlsError as exc:
+            raise PlaybackError(str(exc)) from exc
+        record("media.hls_manifest", parent_trace=asset.trace, bytes=len(result))
+        return result
 
     def render_hls(self, key: str, asset: MediaAsset, base: str) -> bytes:
         headers = {**asset.headers, "Accept-Encoding": "identity"}
@@ -147,27 +196,106 @@ class PlaybackBridge:
                 if size > 2_097_152 or time.monotonic() - started > 30:
                     raise PlaybackError("hls_manifest_limit")
                 chunks.append(chunk)
-            parent = key.partition("~")[0]
-            try:
-                result = rewrite_manifest(
-                    b"".join(chunks), str(response.url),
-                    lambda url, kind: self._hls_child(parent, url, kind, base),
-                )
-            except HlsError as exc:
-                raise PlaybackError(str(exc)) from exc
-        record("media.hls_manifest", parent_trace=asset.trace, bytes=len(result))
-        return result
+            return self._rewrite_hls(key, asset, base, response, b"".join(chunks))
+
+    async def render_hls_async(self, key: str, asset: MediaAsset, base: str) -> bytes:
+        headers = {**asset.headers, "Accept-Encoding": "identity"}
+        async with self._media_request(asset, "GET", headers) as response:
+            if response.status_code != 200:
+                raise PlaybackError("hls_upstream_status")
+            chunks, size = [], 0
+            started = time.monotonic()
+            async for chunk in response.aiter_bytes(16384):
+                size += len(chunk)
+                if size > 2_097_152 or time.monotonic() - started > 30:
+                    raise PlaybackError("hls_manifest_limit")
+                chunks.append(chunk)
+            return self._rewrite_hls(key, asset, base, response, b"".join(chunks))
+
+    @staticmethod
+    def _media_headers(asset: MediaAsset, request_headers: dict) -> dict:
+        headers = httpx.Headers(asset.headers)
+        headers["Accept-Encoding"] = "identity"
+        for name in ("range", "if-range"):
+            if request_headers.get(name):
+                headers[name] = request_headers[name]
+        return dict(headers)
+
+    @staticmethod
+    def _inspect_segment(asset: MediaAsset, probe: httpx.Response, first: bytes) -> None:
+        asset.prefix = png_ts_offset(first)
+        bounds = content_range(probe.headers)
+        if bounds is not None:
+            asset.upstream_size = bounds[2]
+        elif probe.status_code == 200 and probe.headers.get("content-length", "").isdigit():
+            asset.upstream_size = int(probe.headers["content-length"])
+        record("media.segment_inspected", parent_trace=asset.trace, bytes=asset.prefix)
+
+    @staticmethod
+    def _segment_range_headers(asset: MediaAsset, headers: dict) -> dict | httpx.Response:
+        requested_range = headers.get("range", "")
+        offset = asset.prefix or 0
+        if not offset or not requested_range:
+            return headers
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested_range)
+        if match is None or not (match[1] or match[2]):
+            raise PlaybackError("unsupported_segment_range")
+        size = asset.upstream_size - offset if asset.upstream_size is not None else None
+        if match[1]:
+            start = int(match[1])
+            invalid = (size is not None and start >= size) or (match[2] and int(match[2]) < start)
+            end = str(int(match[2]) + offset) if match[2] else ""
+            headers["range"] = f"bytes={start + offset}-{end}"
+        elif size is not None:
+            count = min(int(match[2]), size)
+            invalid = count == 0
+            headers["range"] = f"bytes={asset.upstream_size - count}-"
+        else:
+            invalid = False  # With no known length the upstream resolves the suffix.
+        if invalid:
+            return httpx.Response(416, headers={
+                "Content-Range": f"bytes */{size}" if size is not None else "bytes */*",
+                "Content-Length": "0",
+            }, stream=httpx.ByteStream(b""))
+        return headers
+
+    @staticmethod
+    def _segment_response(asset: MediaAsset, upstream, first: bytes, method: str) -> tuple[dict, int]:
+        if asset.prefix is None:
+            asset.prefix = png_ts_offset(first)
+            record("media.segment_inspected", parent_trace=asset.trace, bytes=asset.prefix)
+        offset = asset.prefix
+        bounds = content_range(upstream.headers)
+        start = bounds[0] if bounds is not None else 0
+        strip = max(0, offset - start) if method != "HEAD" else 0
+        headers = {
+            name: upstream.headers[name] for name in (
+                "content-type", "content-length", "content-range", "accept-ranges",
+            ) if name in upstream.headers
+        }
+        if offset:
+            if upstream.status_code == 206 and bounds is None:
+                raise PlaybackError("invalid_media_range")
+            if bounds:
+                begin, end, total = bounds
+                if end < offset or total <= offset:
+                    raise PlaybackError("invalid_media_range")
+                headers["content-range"] = f"bytes {max(begin, offset)-offset}-{end-offset}/{total-offset}"
+            length = upstream.headers.get("content-length")
+            if length:
+                remove = max(0, offset - start)
+                if int(length) < remove:
+                    raise PlaybackError("invalid_media_range")
+                headers["content-length"] = str(int(length) - remove)
+            headers["content-type"] = "video/mp2t"
+            record("media.segment_unwrapped", parent_trace=asset.trace, bytes=offset)
+        return headers, strip
 
     def open_media(
         self, asset: MediaAsset, method: str, request_headers: dict,
     ) -> httpx.Response:
-        headers = {**asset.headers, "Accept-Encoding": "identity"}
+        headers = self._media_headers(asset, request_headers)
         requested_range = request_headers.get("range", "")
-        if_range = request_headers.get("if-range", "")
-        if requested_range:
-            headers["Range"] = requested_range
-        if if_range:
-            headers["If-Range"] = if_range
         if asset.kind != "segment":
             return self._request(asset, method, headers)
         try:
@@ -178,69 +306,16 @@ class PlaybackBridge:
                     if probe.status_code not in {200, 206}:
                         raise PlaybackError("segment_upstream_status")
                     first = next(probe.iter_bytes(16384), b"")
-                    asset.prefix = png_ts_offset(first)
-                    bounds = content_range(probe.headers)
-                    if bounds is not None:
-                        asset.upstream_size = bounds[2]
-                    elif probe.status_code == 200 and probe.headers.get("content-length", "").isdigit():
-                        asset.upstream_size = int(probe.headers["content-length"])
-                    record("media.segment_inspected", parent_trace=asset.trace, bytes=asset.prefix)
-            offset = asset.prefix or 0
-            if offset and requested_range:
-                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested_range)
-                if match is None or not (match[1] or match[2]):
-                    raise PlaybackError("unsupported_segment_range")
-                size = asset.upstream_size - offset if asset.upstream_size is not None else None
-                if match[1]:
-                    start = int(match[1])
-                    if (size is not None and start >= size) or (match[2] and int(match[2]) < start):
-                        return httpx.Response(416, headers={
-                            "Content-Range": f"bytes */{size}" if size is not None else "bytes */*",
-                            "Content-Length": "0",
-                        }, stream=httpx.ByteStream(b""))
-                    end = str(int(match[2]) + offset) if match[2] else ""
-                    headers["Range"] = f"bytes={start + offset}-{end}"
-                elif size is not None:
-                    count = min(int(match[2]), size)
-                    if count == 0:
-                        return httpx.Response(416, headers={
-                            "Content-Range": f"bytes */{size}", "Content-Length": "0",
-                        }, stream=httpx.ByteStream(b""))
-                    headers["Range"] = f"bytes={asset.upstream_size - count}-"
-                # Without a known length the upstream resolves the suffix range.
+                    self._inspect_segment(asset, probe, first)
+            headers = self._segment_range_headers(asset, headers)
+            if isinstance(headers, httpx.Response):
+                return headers
             upstream = self._request(asset, method, headers)
             if upstream.status_code not in {200, 206}:
                 return upstream
             stream = upstream.iter_bytes(16384)
             first = next(stream, b"") if method != "HEAD" else b""
-            if asset.prefix is None:
-                asset.prefix = png_ts_offset(first)
-                record("media.segment_inspected", parent_trace=asset.trace, bytes=asset.prefix)
-            offset = asset.prefix
-            bounds = content_range(upstream.headers)
-            start = bounds[0] if bounds is not None else 0
-            strip = max(0, offset - start) if method != "HEAD" else 0
-            response_headers = {
-                name: upstream.headers[name] for name in (
-                    "content-type", "content-length", "content-range", "accept-ranges",
-                ) if name in upstream.headers
-            }
-            if offset:
-                if upstream.status_code == 206 and bounds is None:
-                    raise PlaybackError("invalid_media_range")
-                if bounds:
-                    begin, end, total = bounds
-                    if end < offset or total <= offset:
-                        raise PlaybackError("invalid_media_range")
-                    response_headers["content-range"] = f"bytes {max(begin, offset)-offset}-{end-offset}/{total-offset}"
-                length = upstream.headers.get("content-length")
-                if length:
-                    remove = max(0, offset - start)
-                    if int(length) < remove:
-                        raise PlaybackError("invalid_media_range")
-                    response_headers["content-length"] = str(int(length) - remove)
-                response_headers["content-type"] = "video/mp2t"
-                record("media.segment_unwrapped", parent_trace=asset.trace, bytes=offset)
+            response_headers, strip = self._segment_response(asset, upstream, first, method)
             chunks = itertools.chain((first[strip:],), stream) if method != "HEAD" else iter(())
             return httpx.Response(
                 upstream.status_code, headers=response_headers,
@@ -254,6 +329,98 @@ class PlaybackBridge:
             if "upstream" in locals():
                 upstream.close()
             raise
+
+    async def open_media_async(self, asset: MediaAsset, method: str, request_headers: dict) -> httpx.Response:
+        headers = self._media_headers(asset, request_headers)
+        if asset.kind != "segment":
+            return await self._request_async(asset, method, headers)
+        upstream = None
+        try:
+            if (request_headers.get("range") or method == "HEAD") and asset.prefix is None:
+                probe_headers = self._media_headers(asset, {"range": "bytes=0-16383"})
+                async with self._media_request(asset, "GET", probe_headers) as probe:
+                    if probe.status_code not in {200, 206}:
+                        raise PlaybackError("segment_upstream_status")
+                    first = await anext(probe.aiter_bytes(16384), b"")
+                    self._inspect_segment(asset, probe, first)
+            headers = self._segment_range_headers(asset, headers)
+            if isinstance(headers, httpx.Response):
+                return headers
+            upstream = await self._request_async(asset, method, headers)
+            if upstream.status_code not in {200, 206}:
+                return upstream
+            stream = upstream.aiter_bytes(16384)
+            first = await anext(stream, b"") if method != "HEAD" else b""
+            response_headers, strip = self._segment_response(asset, upstream, first, method)
+
+            async def chunks():
+                if method != "HEAD":
+                    yield first[strip:]
+                    async for chunk in stream:
+                        yield chunk
+
+            return httpx.Response(
+                upstream.status_code, headers=response_headers,
+                stream=AsyncClosingStream(chunks(), upstream.aclose),
+            )
+        except (HlsError, ValueError) as exc:
+            if upstream is not None:
+                with anyio.CancelScope(shield=True):
+                    await upstream.aclose()
+            raise PlaybackError(str(exc)) from exc
+        except BaseException:
+            if upstream is not None:
+                with anyio.CancelScope(shield=True):
+                    await upstream.aclose()
+            raise
+
+    def relay_at(
+        self, payload: dict[str, Any], base: str, *,
+        backend_api: str, token: str, internal_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Relay an AT-issued proxy URL; never construct one from a play ID."""
+        url = payload.get("url")
+        if (
+            not base or not backend_api or not token or not isinstance(url, str)
+            or payload.get("parse", 0) not in {None, 0, "0"}
+            or payload.get("jx", 0) not in {None, 0, "0"}
+        ):
+            return payload
+        target, backend = urlsplit(url), urlsplit(backend_api)
+
+        def origin(parsed):
+            return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        prefix = backend.path.rstrip("/") + "/p/" + quote(token, safe="") + "/"
+        if (
+            target.scheme not in {"http", "https"} or target.username or target.password
+            or origin(target) != origin(backend) or not target.path.startswith(prefix)
+            or not target.path[len(prefix):] or "/" in target.path[len(prefix):]
+        ):
+            record("playback.cloud_direct", reason="not_at_proxy")
+            return payload
+        upstream = url
+        if internal_url:
+            internal = urlsplit(internal_url)
+            path = internal.path.rstrip("/") + target.path[len(backend.path.rstrip("/")):]
+            upstream = urlunsplit((internal.scheme, internal.netloc, path, target.query, target.fragment))
+        suffix = "." + target.path.rsplit(".", 1)[-1].lower() if "." in target.path else ".bin"
+        if suffix not in {".mkv", ".mp4", ".avi", ".mov", ".ts", ".webm", ".iso", ".m3u8"}:
+            suffix = ".bin"
+        is_hls = suffix == ".m3u8"
+        mime = "application/vnd.apple.mpegurl" if is_hls else "application/octet-stream"
+        key = self._put(MediaAsset(
+            None, upstream, dict(payload.get("header") or {}), mime,
+            trace_id(), time.monotonic(), "hls" if is_hls else "at_proxy",
+            local_transport=True,
+        ), suffix)
+        output = {**payload, "url": base.rstrip("/") + "/t4/media/" + key,
+                  "header": {}, "parse": 0, "jx": 0, "playUrl": ""}
+        if is_hls:
+            output["format"] = mime
+        record("playback.cloud_relay", route="internal" if internal_url else "subscription",
+               backend="at_powerlist", asset=key)
+        return output
 
     def prepare(self, payload: dict[str, Any], base: str) -> dict[str, Any]:
         output = dict(payload)

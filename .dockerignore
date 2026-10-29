@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!pyproject.toml
+!sidecar/
+!sidecar/**
+**/__pycache__/
+**/*.py[cod]

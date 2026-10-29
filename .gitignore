@@ -3,10 +3,12 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.local/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 build/
+dist/
 *.egg-info/
 
 # Local configuration and credentials

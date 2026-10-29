@@ -51,6 +51,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read package version
+        id: version
+        run: echo "value=$(python -c 'from sidecar import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -59,12 +63,14 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha
+            type=raw,value=${{ steps.version.outputs.value }}
 
       - name: Build and push
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -85,6 +91,26 @@ jobs:
           sha256sum t4-sidecar.tar.gz > SHA256SUMS
           python3 "$GITHUB_WORKSPACE/scripts/image_archive_identity.py" \
             t4-sidecar.tar.gz --revision "$GITHUB_SHA" --tag "$tag" > image-id.json
+
+      - name: Verify built image
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          tag="ghcr.io/${GITHUB_REPOSITORY}:sha-${GITHUB_SHA:0:7}"
+          docker run --rm "$tag" python -m sidecar.worker.dependencies
+          docker run --rm -e EXPECTED_VERSION "$tag" python -c \
+            "import os; from importlib.resources import files; from sidecar import __version__; assert __version__ == os.environ['EXPECTED_VERSION']; assert files('sidecar.web').joinpath('assets/icons/save.svg').is_file()"
+          docker run -d --name t4-image-smoke -p 127.0.0.1:18765:8765 "$tag"
+          trap 'docker logs t4-image-smoke; docker rm -f t4-image-smoke' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18765/t4/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18765/t4/health | python -c \
+            "import json,os,sys; data=json.load(sys.stdin); assert data['status']=='ok' and data['version']==os.environ['EXPECTED_VERSION']"
+          curl --fail --silent http://127.0.0.1:18765/t4/assets/icons/save.svg > /dev/null
+          curl --fail --silent http://127.0.0.1:18765/t4/config.json | python -c \
+            "import json,sys; assert json.load(sys.stdin)=={'sites':[]}"
 
       - name: Upload NAS deployment archive
         uses: actions/upload-artifact@v4

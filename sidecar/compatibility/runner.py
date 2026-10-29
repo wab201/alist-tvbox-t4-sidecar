@@ -122,6 +122,13 @@ class CompatibilityRunner:
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    def playback_identity(self, source_ids=()) -> str:
+        return digest([
+            (source.source_id, source.cloud_playback, source.at_internal_url)
+            for source in self.sources.all()
+            if not source_ids or source.source_id in source_ids
+        ])
+
     def start(self, options: CheckOptions, base: str) -> dict[str, Any]:
         if self.running:
             raise RuntimeError("already_running")
@@ -144,6 +151,7 @@ class CompatibilityRunner:
             "gate": {"passed": False, "reason": "in_progress"},
             "real_device_verified": False, "long_play_verified": False,
             "remote_plugin_source_verified": False,
+            "playback_sha256": self.playback_identity(options.source_ids),
         }
         self.task = asyncio.create_task(self._run(selected, options, base))
         return self.report
@@ -205,14 +213,14 @@ class CompatibilityRunner:
         report["progress"] = {
             "total": len(rows), "completed": sum(row["state"] == "completed" for row in rows),
         }
-        current = report.get("artifact_current", True)
+        current = report.get("artifact_current", True) and report.get("playback_current", True)
         ready = [row for row in rows if not row.get("excluded_from_server_gate")]
         sources_ok = bool(report["sources"]) and all(source["status"] == "pass" for source in report["sources"])
         complete = report["state"] == "completed"
         passed = complete and current and sources_ok and bool(ready) and all(row["status"] == "pass" for row in ready)
         report["gate"] = {
             "passed": passed, "reason": "sample_gate_passed" if passed else
-            "artifact_changed" if not current else
+            ("playback_settings_changed" if not report.get("playback_current", True) else "artifact_changed") if not current else
             "in_progress" if report["state"] in {"running", "cancelling"} else
             "incomplete_or_failed" if complete else "run_" + report["state"],
             "eligible_plugins": len(ready),
@@ -241,6 +249,7 @@ class CompatibilityRunner:
                     "source_id": safe_label(source.source_id), "status": "pass",
                     "site_count": snapshot.site_count,
                     "descriptor_count": len(snapshot.plugins), "parse_errors": len(snapshot.errors),
+                    "cloud_playback": source.cloud_playback,
                 }
                 report["sources"].append(source_row)
                 if snapshot.errors or snapshot.site_count != len(snapshot.plugins):
@@ -305,7 +314,10 @@ class CompatibilityRunner:
                                     "error": type(exc).__name__, **safe_error_fields(error_details(exc)),
                                 }
                             finally:
-                                if self.release_plugin and plugin.plugin_type != "builtin":
+                                if (
+                                    self.release_plugin and plugin.plugin_type != "builtin"
+                                    and not plugin.t4_endpoint
+                                ):
                                     try:
                                         await self.release_plugin(source.source_id, plugin.plugin_id)
                                     except Exception as exc:
@@ -343,6 +355,9 @@ class CompatibilityRunner:
                     self._run_error(exc, "runtime_cleanup")
             try:
                 report["artifact_current"] = report["artifact"]["tree_sha256"] == artifact_identity()["tree_sha256"]
+                report["playback_current"] = (
+                    report["playback_sha256"] == self.playback_identity(options.source_ids)
+                )
             except Exception as exc:
                 terminal_state = "failed"
                 report["artifact_current"] = False

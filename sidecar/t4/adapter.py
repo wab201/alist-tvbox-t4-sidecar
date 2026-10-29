@@ -20,6 +20,7 @@ from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
 from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
+from sidecar.playback import PlaybackBridge
 
 
 class WorkerInvoker(Protocol):
@@ -64,6 +65,7 @@ class T4Adapter:
         native_invoker: NativeInvoker | None = None,
         subscription_resolver: Any | None = None,
         local_snapshot_provider: Any | None = None,
+        playback_bridge: PlaybackBridge | None = None,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
@@ -72,6 +74,7 @@ class T4Adapter:
         self._opaque_ids = opaque_ids or OpaqueIdStore()
         self._subscription_resolver = subscription_resolver
         self._local_snapshot_provider = local_snapshot_provider
+        self._playback = playback_bridge
         self._plugin_locks: dict[str, asyncio.Lock] = {}
         self._navigation_cards: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self._navigation_slots = asyncio.Semaphore(3)
@@ -245,8 +248,16 @@ class T4Adapter:
             plugin.plugin_id,
         )
         runtime_key = f"{request.source_id}:{plugin.plugin_id}"
-        record("backend.invoke", backend="native" if plugin.plugin_type == "builtin" else "worker")
-        if plugin.plugin_type == "builtin":
+        backend = (
+            "official_t4" if plugin.t4_endpoint
+            else "native" if plugin.plugin_type == "builtin"
+            else "worker"
+        )
+        server_proxy = source.cloud_playback == "server"
+        if server_proxy and (backend == "worker" or method == "play"):
+            params["_server_proxy"] = True
+        record("backend.invoke", backend=backend)
+        if plugin.plugin_type == "builtin" or plugin.t4_endpoint:
             if self._native is None:
                 raise SubscriptionParseError("native bridge is not configured")
             result = await asyncio.to_thread(
@@ -265,12 +276,18 @@ class T4Adapter:
                 method,
                 params,
             )
-        return self._normalize(
+        payload = self._normalize(
             request.module,
             result,
             source,
             plugin,
         )
+        if request.module == "play" and server_proxy and self._playback is not None:
+            payload = self._playback.relay_at(
+                payload, request.proxy_base, backend_api=plugin.backend_api,
+                token=plugin.token, internal_url=source.at_internal_url,
+            )
+        return payload
 
     def _unwrap_params(
         self,
@@ -549,7 +566,7 @@ class AtvpWorkerInvoker:
         with self._lock_for(runtime_key):
             params = dict(params)
             base = str(params.pop("_proxy_base", "")).rstrip("/")
-            extend = plugin.worker_extend()
+            extend = plugin.worker_extend(server_proxy=bool(params.pop("_server_proxy", False)))
             previous = self._initialized.get(runtime_key)
             if previous != extend:
                 self._initialized.pop(runtime_key, None)

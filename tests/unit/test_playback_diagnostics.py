@@ -74,6 +74,7 @@ def test_inline_dash_http_and_range_proxy_keep_audio_headers_and_parent_trace(
 
     app.state.playback.client.close()
     app.state.playback.client = httpx.Client(transport=httpx.MockTransport(upstream))
+    app.state.playback.media_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
     with TestClient(app, base_url="https://public.example:9443") as client:
         path = "/t4/fm/source-a/demo/" if entry == "fm" else "/t4/api/play"
         params = {"play": "raw", "source": "source-a", "site": "demo"}

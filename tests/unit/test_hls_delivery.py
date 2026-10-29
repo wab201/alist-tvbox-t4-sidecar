@@ -83,6 +83,9 @@ def setup_client(tmp_path, seen, **options):
     app = application(tmp_path, HlsWorker())
     app.state.playback.client.close()
     app.state.playback.client = httpx.Client(transport=httpx.MockTransport(upstream(seen, **options)))
+    app.state.playback.media_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream(seen, **options))
+    )
     return app
 
 

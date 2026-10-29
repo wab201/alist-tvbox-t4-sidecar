@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     environment:
-      # Preserve HTTPS from the reverse proxy when generating client API URLs.
+      # 生成客户端地址时保留反向代理传入的 HTTPS 协议。
       FORWARDED_ALLOW_IPS: "*"
       T4_SOURCES_FILE: ${T4_SOURCES_FILE:-/app/config/sources.json}
       T4_PLUGIN_DIR: ${T4_PLUGIN_DIR:-/data/plugins}
@@ -19,10 +19,9 @@ services:
       - "${T4_PORT:-8765}:8765"
     volumes:
       - t4_data:/data
-      # Optional custom secspider keyring fallback. Keep this file read-only.
+      # 可选自定义 secspider keyring，只读挂载，不提交真实文件。
       # - ./secrets/atvp-keyring.json:/run/secrets/atvp-keyring.json:ro
-      # Optional file-based source registry. Uncomment when not using the
-      # ALIST_TVBOX_SUBSCRIPTION_URL environment source.
+      # 不使用环境订阅 ALIST_TVBOX_SUBSCRIPTION_URL 时可启用文件 source。
       # - ./config/sources.json:/app/config/sources.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/t4/health', timeout=3)"]
@@ -30,8 +29,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Put this service behind the AT reverse proxy when a same-origin /t4/ path
-  # is required. The AT container itself remains unchanged.
+  # 可选 Nginx 入口，不修改 AT 本体；路径拼接见 NAS_DEPLOYMENT.md。
   t4-proxy:
     image: nginx:1.27-alpine
     profiles: ["proxy"]

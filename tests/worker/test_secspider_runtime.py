@@ -48,8 +48,9 @@ def signing_bytes(headers: dict[str, str], payload_b64: str) -> bytes:
 
 def build_secspider_fixture(
     tmp_path: Path,
+    source: str | None = None,
 ) -> tuple[str, str, list[str], list[str]]:
-    source = """
+    source = source if source is not None else """
 from base.spider import Spider
 
 class Spider(Spider):

@@ -129,7 +129,8 @@ class ResourceProbes:
                         path.rsplit("/", 1)[-1], asset, urlsplit(url)._replace(path="", query="", fragment="").geturl(),
                     )
                     return content, {"content-type": asset.mime}, url, 200
-                if asset.kind == "segment":
+                if asset.kind in {"segment", "at_proxy"}:
+                    started = time.monotonic()
                     with closing(self.bridge.open_media(asset, "GET", {
                         "range": f"bytes={start}-{start + limit - 1}",
                     })) as response:
@@ -137,6 +138,8 @@ class ResourceProbes:
                             raise ProbeFailure("http_status", http_status=response.status_code)
                         data = bytearray()
                         for chunk in response.iter_bytes(min(limit, 16384)):
+                            if time.monotonic() - started > 12:
+                                raise ProbeFailure("resource_deadline", status="blocked")
                             data.extend(chunk[:limit - len(data)])
                             if len(data) >= limit:
                                 break

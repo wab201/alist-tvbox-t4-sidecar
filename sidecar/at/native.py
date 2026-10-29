@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from typing import Any
@@ -20,7 +21,7 @@ class NativeAtUnsupportedError(NativeAtError):
 
 
 class NativeAtClient:
-    """Calls AT's own built-in source and playback routes without reimplementing them."""
+    """Calls AT-owned builtin and remote plugin routes without running their code."""
 
     def __init__(
         self,
@@ -43,8 +44,18 @@ class NativeAtClient:
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
+        if plugin.t4_endpoint and plugin.plugin_type == "official_t4":
+            if method == "action":
+                raise NativeAtUnsupportedError(
+                    "official AT plugin endpoint does not expose standalone actions"
+                )
+            return self._request(
+                plugin, "/t4/v", self._t4_query(method, params),
+                {"X-CLIENT": str(params.get("client") or "t4-sidecar")},
+                endpoint=plugin.t4_endpoint,
+            )
         if plugin.plugin_type != "builtin":
-            raise NativeAtError("native bridge requires a builtin plugin")
+            raise NativeAtError("native bridge requires an AT-owned source")
         if not _builtin_route(plugin.api):
             raise NativeAtUnsupportedError(
                 "builtin source has no server-side T4 route"
@@ -53,6 +64,12 @@ class NativeAtClient:
             raise NativeAtUnsupportedError(
                 "PianDan is title-search navigation; select a card in the client "
                 "to search other sources, not a standalone detail or play API"
+            )
+        if plugin.t4_endpoint:
+            query = self._t4_query(method, params)
+            headers = {"X-CLIENT": str(params.get("client") or "t4-sidecar")}
+            return self._request(
+                plugin, "/t4/v", query, headers, endpoint=plugin.t4_endpoint,
             )
         if plugin.api == "csp_Live" and method == "play":
             play_id = str(params.get("id") or "")
@@ -88,8 +105,10 @@ class NativeAtClient:
         path: str,
         query: dict[str, Any],
         headers: dict[str, str],
+        *,
+        endpoint: str | None = None,
     ) -> dict[str, Any]:
-        endpoint = self._endpoint(plugin, path)
+        endpoint = endpoint or self._endpoint(plugin, path)
         start = time.monotonic()
         try:
             response = self._client.get(endpoint, params=query, headers=headers)
@@ -109,6 +128,41 @@ class NativeAtClient:
         if not isinstance(payload, dict):
             raise NativeAtError("AT native response must be an object")
         return payload
+
+    @staticmethod
+    def _t4_query(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "home":
+            return {"filter": str(params.get("filter", True)).lower()}
+        if method == "category":
+            filters = dict(params.get("native_filter") or {})
+            for key in ("sort", "year", "genre", "region", "platform"):
+                if params.get(key) not in (None, ""):
+                    filters[key] = params[key]
+            encoded = base64.urlsafe_b64encode(
+                json.dumps(filters, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            return {
+                "ac": "detail", "t": str(params.get("tid") or ""),
+                "pg": str(params.get("pg") or "1"), "ext": encoded,
+            }
+        if method == "search":
+            return {
+                "wd": str(params.get("key") or ""),
+                "pg": str(params.get("pg") or "1"),
+                "quick": str(params.get("quick", True)).lower(),
+            }
+        if method == "detail":
+            ids = params.get("ids") or []
+            if not isinstance(ids, list):
+                ids = [ids]
+            return {"ac": "detail", "ids": ",".join(str(value) for value in ids)}
+        if method in {"play", "action"}:
+            play_id = str(params.get("id") or "")
+            if not play_id:
+                raise NativeAtUnsupportedError("official T4 play/action requires a play id")
+            # AT dispatches action tracks (including Live follow) through play.
+            return {"play": play_id, "flag": str(params.get("flag") or "")}
+        raise NativeAtUnsupportedError("unsupported official T4 method")
 
     @staticmethod
     def _play_route(plugin: PluginDescriptor) -> str:
@@ -248,8 +302,9 @@ class NativeAtClient:
             return ""
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
-    @staticmethod
+    @classmethod
     def _play_query(
+        cls,
         plugin: PluginDescriptor,
         params: dict[str, Any],
     ) -> dict[str, Any]:
@@ -266,7 +321,10 @@ class NativeAtClient:
         return {
             "id": play_id,
             "from": str(params.get("from") or "jar"),
-            "type": str(params.get("type") or "client-proxy"),
+            "type": (
+                "" if params.get("_server_proxy") and cls._play_route(plugin) == "/play"
+                else str(params.get("type") or "client-proxy")
+            ),
             **(
                 {"t": str(params["t"])}
                 if params.get("t") not in (None, "")

@@ -1,7 +1,7 @@
 # NAS 部署指南
 
-`0.2.3` 修复我的云盘/AList 在影视详情请求中的 `ac` 参数冲突。
-升级后重新打开影片详情再选集；继续使用原统一订阅，不需要新增配置。
+当前版本 `0.3.0`，提供网盘服务端通路、可选 AT 内网回源、官方远程插件识别和媒体取消释放。
+升级后重新打开影片详情再选集；继续使用原统一订阅，不需要新增 Token。
 普通媒体连同必要请求头交给客户端；生产容器不安装 FFmpeg、不转码、不解码。
 升级到包含该功能的镜像后，
 在 `/t4/` 页面点击“开始检测”即可检查全部订阅插件，不需要新增 Token。
@@ -12,18 +12,20 @@
 T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:latest
 ```
 
-需要固定版本时使用版本日志中经核验的 `sha-<提交前七位>` 标签，不要用镜像创建时间推断版本。
-当前已核验版本为 `0.2.3`，固定镜像：
+需要固定版本时使用版本标签或版本日志中经核验的 `sha-<提交前七位>`，
+不要用镜像创建时间推断版本。当前版本镜像：
 
 ```text
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-bb19317
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.0
 ```
 
-NAS 已原地备份升级，健康检查通过，55 个运行文件匹配提交，原端口、数据卷、配置及 AT 容器保持不变。
-真实我的云盘首两集 24 组取链全部 200，首中尾 Range 全部 206；PY/JS 隔离请求与管理检查通过。
-普通直链和 Referer/User-Agent 仍交给客户端。影视应重新打开详情，不能继续使用升级前缓存的播放 ID。
+源码公开与 GHCR 包公开是两件事。如果镜像匿名拉取受限，可以使用本页的公开 Release
+归档或按 [源码构建指南](BUILDING.md) 在本机构建，不需要给 Sidecar 添加 GitHub 凭证。
+发布及 NAS 验证结果见 [版本记录](CHANGELOG.md)，未完成的性能、全部驱动和真机长播
+不会因升级自动变成已通过。网盘模式默认直连。
 
-历史记录：2026-10-28 已核验 `0.2.2` 固定镜像 `ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-503b2ec`：
+历史记录：`0.2.3 / sha-bb19317` 已验证 NAS、24 组云盘取链及首中尾 Range。
+2026-10-28 已核验 `0.2.2` 固定镜像 `ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-503b2ec`：
 NAS 健康、Web、173 站点订阅、55 个运行文件及 PY/JS 管理检查通过。
 18 个内置条目七阶段抽样仍有 11 失败、1 受阻、5 不适用，只有 1 个整链通过；
 截图对应四集的网络抽样通过不代表全部片源或 FM 真机兼容。
@@ -40,7 +42,7 @@ NAS 健康、Web、173 站点订阅、55 个运行文件及 PY/JS 管理检查�
 1. NAS 已安装 Docker 或 Container Manager。
 2. NAS 可以访问 `ghcr.io` 和 AT 服务地址。
 3. 已在 AT 中生成一条可用的完整订阅地址。
-4. 如果 GHCR 镜像为私有包，准备 GitHub 个人访问令牌，至少具有 `read:packages` 权限。
+4. 发布镜像默认是 `linux/amd64`；ARM NAS 参见源码构建指南，不直接导入 x86 归档。
 
 Sidecar 不读取 AT 用户名和密码，也不需要把 AT 登录密码写入容器。当前推荐直接使用 AT 生成的完整订阅地址：
 
@@ -60,8 +62,8 @@ mkdir -p /volume1/docker/alist-tvbox-t4-sidecar
 cd /volume1/docker/alist-tvbox-t4-sidecar
 ```
 
-将仓库中的 `docker-compose.yml` 和 `.env.example` 上传到 NAS 项目目录。
-可以使用 NAS 文件管理器上传，也可以在已经完成 GitHub 认证的 NAS 上克隆私有仓库：
+可将仓库中的 `docker-compose.yml` 和 `.env.example` 上传到 NAS 项目目录，
+或匿名克隆公开源码：
 
 ```bash
 git clone https://github.com/wab201/alist-tvbox-t4-sidecar.git .
@@ -69,8 +71,8 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-如果 NAS 未安装 Git，直接通过文件管理器上传这两个文件即可，不需要把 GitHub
-Token 写入克隆地址。当前仓库为私有仓库，匿名 `curl` 下载 GitHub Raw 文件不可用。
+如果 NAS 未安装 Git，直接通过文件管理器上传这两个文件即可；不要把 GitHub
+Token 写入克隆地址。不要覆盖已有部署的 `.env`。
 
 编辑 `.env`，至少填写 AT 订阅地址：
 
@@ -89,9 +91,32 @@ T4_COMPATIBILITY_REPORT=/data/reports/compatibility-latest.json
 
 不要把真实 `.env` 上传到 GitHub、截图、工单或公开日志。
 
-## 三、登录 GHCR
+## 三、获取镜像
 
-仓库和镜像包为私有时，NAS 首次拉取前需要登录 GHCR。GitHub 个人访问令牌只用于 NAS 的 Docker 凭证，不要写进 `.env`：
+优先尝试 `docker compose pull t4-sidecar`。GHCR 包可见性独立于源码仓库；
+若返回 `denied`，可直接使用公开 Release 的同次构建镜像归档，无需登录：
+
+```bash
+mkdir -p releases/v0.3.0
+cd releases/v0.3.0
+curl -fL -O https://github.com/wab201/alist-tvbox-t4-sidecar/releases/download/v0.3.0/t4-sidecar.tar.gz
+curl -fL -O https://github.com/wab201/alist-tvbox-t4-sidecar/releases/download/v0.3.0/SHA256SUMS
+curl -fL -O https://github.com/wab201/alist-tvbox-t4-sidecar/releases/download/v0.3.0/image-id.json
+sha256sum -c SHA256SUMS
+gzip -dc t4-sidecar.tar.gz | docker load
+cd ../..
+```
+
+归档导入后会显示 `sha-<提交前七位>` 标签，将 `.env` 的 `T4_IMAGE` 改为这个完整标签，
+然后跳过 pull，执行：
+
+```bash
+docker compose config --quiet
+docker compose up -d --no-deps --no-build --pull never t4-sidecar
+```
+
+归档适用于 `linux/amd64`。下载失败时不要继续导入；先检查 HTTP 状态和校验值。
+如果已有可用 GHCR 账号，也可登录私有包：
 
 ```bash
 read -s GHCR_TOKEN
@@ -101,7 +126,7 @@ unset GHCR_TOKEN
 
 令牌至少需要 `read:packages`。如果 GitHub 组织或仓库启用了额外 SSO，还需要按组织要求授权该令牌。
 
-如果管理员已将 GHCR 包设为公开，可以跳过 `docker login`。不要为了绕过权限把含订阅授权信息的 AT 地址改成公开地址。
+这一步不是 Sidecar 的额外鉴权，也不是必须配置。不要把含订阅授权信息的 AT 地址改成公开地址。
 
 ## 四、拉取并启动
 
@@ -128,7 +153,7 @@ curl -fsS http://127.0.0.1:8765/t4/health
 预期返回包含：
 
 ```json
-{"status":"ok","version":"0.2.1"}
+{"status":"ok","version":"0.3.0"}
 ```
 
 从局域网访问：
@@ -173,6 +198,20 @@ curl -fsS http://127.0.0.1:8765/t4/health
 4. 需要诊断时，在 AT 订阅下选择插件，点击“首页冒烟”测试首页。
 5. “复制插件 API”只复制单个站点的 `api`，不是可导入点播配置的完整订阅。
 6. 修改 `.env` 后先重新创建容器，再刷新页面。
+
+### 网盘服务端通路
+
+在 AT 订阅下选择“服务端加速”并保存；若 Sidecar 与 AT 在同一 NAS，
+可填从 Sidecar 容器可访问的 AT 内网地址，例如 `http://at:4567`。
+容器网络不相通时应先配置共同 Docker 网络或使用可达的 NAS 地址，
+`127.0.0.1` 不是另一个容器。地址只填 AT 服务根地址或其真实前缀，
+不要填 PowerList 端口、订阅地址或带凭证的 URL。
+
+Sidecar 只接入 AT 实际返回的 `/p`，保留原网盘参数，复用 AT/PowerList 的分片层，
+不增加第二层下载器。播放设置保存在 `/data/plugins/playback.json`，
+不修改 AT；选择直连并保存可恢复新取链的默认行为，不强制中断已有播放。
+公网中转可能比直链更慢，内网与原版客户端完整性能需分别验证。
+完整合同和环境变量说明见 README 的“网盘服务端加速”。
 
 页面中的“上传本地插件”支持标准 Python `Spider` 和 Sidecar JavaScript 插件。上传后会自动注册
 `local-uploaded` source，并持久化到 Docker volume；不需要手工编辑 `sources.json`。
@@ -253,7 +292,9 @@ docker compose pull t4-sidecar
 docker compose up -d t4-sidecar
 ```
 
-回滚就是把 `T4_IMAGE` 改回上一个已验证的 `sha-` 标签，再重新执行上述两条命令。不要在 NAS 上使用 `docker compose up --build`，那会绕过 GHCR 镜像并在 NAS 本地构建。
+回滚就是把 `T4_IMAGE` 改回上一个已验证且仍保留的镜像，再重建 Sidecar。
+使用镜像部署时不要混用 `up --build`；有意从源码构建请按 [构建指南](BUILDING.md)，
+使用独立本地标签并明确 `--pull never`。
 
 ### 已有 NAS 实例升级
 
@@ -262,7 +303,7 @@ docker compose up -d t4-sidecar
 备份原 Compose、`.env` 和数据卷，备份仅留在 NAS 并限制权限；保留旧镜像以便回滚。
 只重建 `t4-sidecar`，不要执行 `down -v`，也不要重启 AT 本体。
 
-如果现有凭证没有私有 GHCR 的 `read:packages` 权限，可以使用同一次 GitHub Actions 构建生成的
+如果镜像拉取受限，可使用版本 Release 的镜像归档，或同一次 GitHub Actions 构建生成的
 `nas-image-<完整提交 SHA>` 归档，无需改动账号权限或把令牌保存到 NAS。归档保留 3 天，
 包含镜像、`SHA256SUMS` 和 `image-id.json`，可从对应构建的 Artifacts 下载。
 将归档解压到 NAS 的独立升级目录后执行：
@@ -356,6 +397,7 @@ server {
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
     }
 }
 ```
@@ -453,10 +495,10 @@ chmod 600 config/sources.json
 
 ### `docker pull` 返回 denied
 
-检查 NAS 是否登录了正确的 GHCR 账户，以及令牌是否具备 `read:packages`。重新登录：
+源码公开不等于镜像包公开。先使用第三节的 Release 归档或源码构建；
+已有 GHCR 凭证时再检查账号和 `read:packages` 权限：
 
 ```bash
-docker logout ghcr.io
 read -s GHCR_TOKEN
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username 你的GitHub用户名 --password-stdin
 unset GHCR_TOKEN

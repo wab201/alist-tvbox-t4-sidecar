@@ -17,8 +17,14 @@ def build_compatibility_router(runner: CompatibilityRunner) -> APIRouter:
             # Historic evidence cannot certify a changed workspace or image.
             current = report["artifact"]["tree_sha256"] == artifact_identity()["tree_sha256"]
             report["artifact_current"] = current
+            playback_current = report.get("playback_sha256") == runner.playback_identity(
+                report.get("options", {}).get("source_ids", []),
+            )
+            report["playback_current"] = playback_current
             if not current:
                 report["gate"].update(passed=False, reason="artifact_changed")
+            elif not playback_current:
+                report["gate"].update(passed=False, reason="playback_settings_changed")
             if runner.running and report["state"] == "completed":
                 return {**report, "state": "running",
                         "gate": {**report["gate"], "passed": False, "reason": "report_pending"}}

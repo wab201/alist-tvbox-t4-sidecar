@@ -8,7 +8,9 @@
       "at_base_url": "http://at:4567",
       "subscription_id": "0",
       "subscription_token": "replace-with-at-subscription-token",
-      "subscription_url": null
+      "subscription_url": null,
+      "cloud_playback": "direct",
+      "at_internal_url": null
     }
   ]
 }

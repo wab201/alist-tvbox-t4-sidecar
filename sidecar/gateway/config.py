@@ -24,6 +24,8 @@ class Settings:
     subscription_url: str | None = None
     log_file: str | None = None
     compatibility_report: str | None = None
+    cloud_playback: str = "direct"
+    at_internal_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -41,4 +43,6 @@ class Settings:
             subscription_url=os.getenv("ALIST_TVBOX_SUBSCRIPTION_URL") or None,
             log_file=os.getenv("T4_LOG_FILE") or None,
             compatibility_report=os.getenv("T4_COMPATIBILITY_REPORT") or None,
+            cloud_playback=os.getenv("T4_CLOUD_PLAYBACK_MODE", "direct"),
+            at_internal_url=os.getenv("ALIST_TVBOX_INTERNAL_URL") or None,
         )

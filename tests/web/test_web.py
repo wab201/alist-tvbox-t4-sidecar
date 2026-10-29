@@ -46,6 +46,10 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert 'id="trace-live"' in response.text
     assert 'id="export-traces"' in response.text
     assert "/t4/api/diagnostics/check" in response.text
+    assert "服务端加速" in response.text
+    assert "AT 内网地址（可选）" in response.text
+    assert "/playback`" in response.text
+    assert 'jsonOptions("PUT"' in response.text
 
 
 def test_web_icons_are_served_locally() -> None:
@@ -53,6 +57,7 @@ def test_web_icons_are_served_locally() -> None:
     response = client.get("/t4/assets/icons/trash-2.svg")
     assert response.status_code == 200
     assert "<svg" in response.text
+    assert client.get("/t4/assets/icons/save.svg").status_code == 200
     assert client.get("/t4/assets/../registry.json").status_code == 404
 
 
