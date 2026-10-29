@@ -5,6 +5,8 @@
 PY/JS JSON 返回兼容和媒体断连释放。普通直链仍默认交给客户端，不转码。
 网盘公网中转不保证快于直链；原客户端完整性能对照与真机长播尚未完成。
 镜像身份、Linux 测试和 NAS 验证以版本记录为准，不能据单项功能推断全部插件兼容。
+2026-10-29 已发布 `v0.3.0 / sha-57a3cda` 并更新 NAS；仓库可匿名克隆，
+Release 附同次构建的镜像归档和校验文件，GHCR 包权限独立。
 真实订阅 178 条的检测结果和下一轮修复节点见 [兼容基线](COMPATIBILITY_BASELINE.md)；当前总门禁未放行。
 已复现的缺依赖、模块加载、请求头及图片检测问题，见 [失败根因与修复方案](FAILURE_ANALYSIS.md)。
 M16 已补齐依赖包上传、模块加载、Python 宿主代理、AES-128 检测及任务异常追溯。
@@ -472,7 +474,7 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-源码仓库公开后可以匿名克隆。GitHub 仓库与 GHCR 包的可见性独立；
+源码仓库已公开，可以匿名克隆。GitHub 仓库与 GHCR 包的可见性独立；
 若拉取镜像返回 `denied`，可按 NAS 指南导入公开 Release 中的同次构建镜像，
 不需要给 Sidecar 配置 GitHub 凭证，也可以从源码自行构建。
 

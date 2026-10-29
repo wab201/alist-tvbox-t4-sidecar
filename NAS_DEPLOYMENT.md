@@ -24,6 +24,10 @@ T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.0
 发布及 NAS 验证结果见 [版本记录](CHANGELOG.md)，未完成的性能、全部驱动和真机长播
 不会因升级自动变成已通过。网盘模式默认直连。
 
+2026-10-29 已核验固定镜像 `sha-57a3cda`：NAS 健康、59 个运行文件、
+178 条订阅解析、173 站点统一出口、24 组云盘取链及首中尾 Range 通过；
+隔离内网回源与 PY/JS 管理回归通过。数据卷、原端口及两个 AT 容器保持不变。
+
 历史记录：`0.2.3 / sha-bb19317` 已验证 NAS、24 组云盘取链及首中尾 Range。
 2026-10-28 已核验 `0.2.2` 固定镜像 `ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-503b2ec`：
 NAS 健康、Web、173 站点订阅、55 个运行文件及 PY/JS 管理检查通过。
@@ -108,6 +112,12 @@ cd ../..
 ```
 
 归档导入后会显示 `sha-<提交前七位>` 标签，将 `.env` 的 `T4_IMAGE` 改为这个完整标签，
+本次 `v0.3.0` 对应：
+
+```dotenv
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:sha-57a3cda
+```
+
 然后跳过 pull，执行：
 
 ```bash
@@ -135,6 +145,9 @@ unset GHCR_TOKEN
 ```bash
 docker compose config --quiet
 ```
+
+仅在使用 GHCR 拉取方式时执行下列命令。已导入 Release 镜像或已源码构建的用户，
+使用上文的 `--pull never` 启动命令，不再执行 pull。
 
 拉取镜像并启动：
 
@@ -206,6 +219,8 @@ curl -fsS http://127.0.0.1:8765/t4/health
 容器网络不相通时应先配置共同 Docker 网络或使用可达的 NAS 地址，
 `127.0.0.1` 不是另一个容器。地址只填 AT 服务根地址或其真实前缀，
 不要填 PowerList 端口、订阅地址或带凭证的 URL。
+同一 NAS 有多套 AT 时，必须对应当前订阅的实际媒体后端，不能仅按容器名猜端口；
+连通或首页 200 不代表该实例能处理当前订阅返回的 `/p`。
 
 Sidecar 只接入 AT 实际返回的 `/p`，保留原网盘参数，复用 AT/PowerList 的分片层，
 不增加第二层下载器。播放设置保存在 `/data/plugins/playback.json`，
