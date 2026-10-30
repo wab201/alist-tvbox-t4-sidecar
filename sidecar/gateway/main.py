@@ -19,6 +19,7 @@ from sidecar.gateway.routes.subscriptions import (
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.playback_settings import PlaybackSettingsStore
+from sidecar.gateway.navigation_settings import NavigationSettingsStore
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
 from sidecar.gateway.routes.fm import build_fm_router
@@ -86,6 +87,9 @@ def create_app(
     playback_settings = PlaybackSettingsStore(
         runtime_sources, Path(runtime_settings.plugin_dir) / "playback.json",
     )
+    navigation_settings = NavigationSettingsStore(
+        Path(runtime_settings.plugin_dir) / "navigation.json",
+    )
     subscription_resolver = CachedSubscriptionResolver(
         subscription_fetcher,
         ttl=runtime_settings.subscription_cache_ttl,
@@ -106,6 +110,7 @@ def create_app(
             native_invoker=NativeAtInvoker(native_client),
             playback_bridge=playback,
             image_bridge=images,
+            navigation_settings=navigation_settings,
         )
     else:
         runtime_adapter = t4_adapter
@@ -124,6 +129,7 @@ def create_app(
         native_invoker=NativeAtInvoker(native_client) if native_client is not None else None,
         playback_bridge=playback,
         image_bridge=images,
+        navigation_settings=navigation_settings,
     ) if t4_adapter is None else t4_adapter
 
     async def gate_snapshot(source):
@@ -236,7 +242,12 @@ def create_app(
     ))
     app.include_router(build_compatibility_router(compatibility))
     app.include_router(build_health_router(runtime_settings))
-    app.include_router(build_sources_router(runtime_sources, playback_settings))
+    async def navigation_snapshot(source):
+        return upload_store.snapshot_for(source.source_id) or await subscription_resolver.resolve(source)
+
+    app.include_router(build_sources_router(
+        runtime_sources, playback_settings, navigation_settings, navigation_snapshot,
+    ))
     app.include_router(
         build_client_config_router(
             runtime_sources,

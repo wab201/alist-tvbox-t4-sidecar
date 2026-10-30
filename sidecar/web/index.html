@@ -52,6 +52,11 @@
     .source-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-top: 12px; }
     .playback-controls { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 2fr) auto; gap: 10px; align-items: end; margin-top: 14px; }
     .playback-state { margin-top: 6px; min-height: 21px; overflow-wrap: anywhere; }
+    .navigation-settings { margin-top: 12px; }
+    .navigation-settings summary { cursor: pointer; font-weight: 600; }
+    .navigation-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; max-height: 300px; overflow: auto; margin: 8px 0; }
+    .navigation-options label { overflow-wrap: anywhere; min-width: 0; }
+    .navigation-options input { flex-shrink: 0; }
     .fm-entry { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
     .fm-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
     .snapshot { margin-top: 12px; padding: 12px; background: #e9eef3; max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
@@ -563,6 +568,63 @@
       playbackState.className = "playback-state muted";
       playbackState.setAttribute("role", "status");
       article.append(playbackForm, playbackState);
+      const navigation = document.createElement("details");
+      navigation.className = "navigation-settings";
+      navigation.innerHTML = '<summary>片单搜源范围</summary><form><label class="check-label"><input class="navigation-all" type="checkbox">全部可搜插件（含新增）</label><div class="navigation-options"></div><div class="toolbar"><span role="status"></span></div></form>';
+      const navForm = navigation.querySelector("form");
+      const navAll = navigation.querySelector(".navigation-all");
+      const navOptions = navigation.querySelector(".navigation-options");
+      const navState = navigation.querySelector('[role="status"]');
+      const navSave = iconButton("save", "保存片单搜源范围", "save-navigation");
+      navSave.type = "submit";
+      navSave.disabled = navAll.disabled = true;
+      navigation.querySelector(".toolbar").append(navSave);
+      article.append(navigation);
+      const navPath = `/t4/api/sources/${encodeURIComponent(source.id)}/navigation`;
+      let navLoaded = false;
+      const renderNavigation = value => {
+        navOptions.replaceChildren();
+        navAll.checked = value.plugin_ids === null;
+        value.plugins.forEach(plugin => {
+          const label = document.createElement("label");
+          label.className = "check-label";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = plugin.id;
+          input.checked = plugin.selected;
+          input.setAttribute("aria-label", `${plugin.name} · ${plugin.id}`);
+          label.append(input, document.createTextNode(`${plugin.name} · ${plugin.id}`));
+          navOptions.append(label);
+        });
+        navState.textContent = `已选 ${value.plugins.filter(p => p.selected).length} / ${value.plugins.length}`;
+        navSave.disabled = navAll.disabled = false;
+        navAll.onchange();
+      };
+      navAll.onchange = () => {
+        navOptions.querySelectorAll("input").forEach(input => {
+          input.disabled = navAll.checked;
+        });
+      };
+      const loadNavigation = async () => {
+        navSave.disabled = navAll.disabled = true;
+        try {
+          renderNavigation(await request(navPath));
+          navLoaded = true;
+        } catch (error) { navState.textContent = error.message; }
+      };
+      navigation.ontoggle = () => {
+        if (navigation.open && !navLoaded) loadNavigation();
+      };
+      navForm.onsubmit = async event => {
+        event.preventDefault();
+        navSave.disabled = true;
+        try {
+          const ids = navAll.checked ? null : [...navOptions.querySelectorAll("input:checked")].map(i => i.value);
+          renderNavigation(await request(navPath, jsonOptions("PUT", {plugin_ids: ids})));
+          setStatus("片单搜源范围已保存，重新打开片单影片生效", "ok");
+        } catch (error) { navState.textContent = error.message; }
+        finally { navSave.disabled = false; }
+      };
       mode.disabled = internal.disabled = true;
       const playbackPath = `/t4/api/sources/${encodeURIComponent(source.id)}/playback`;
       mode.onchange = () => { internal.disabled = mode.value !== "server"; };
@@ -631,7 +693,11 @@
           throw error;
         } finally { refresh.disabled = false; }
       };
-      refresh.onclick = () => load(true).then(() => setStatus("AT 订阅已重新读取", "ok")).catch(() => {});
+      refresh.onclick = () => load(true).then(async () => {
+        navLoaded = false;
+        if (navigation.open) await loadNavigation();
+        setStatus("AT 订阅已重新读取", "ok");
+      }).catch(() => {});
       copy.onclick = () => {
         const plugin = selected();
         const native = Boolean(plugin?.client_config_path);

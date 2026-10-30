@@ -19,6 +19,7 @@ from sidecar.at.subscription import (
     resolve_subscription,
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
+from sidecar.gateway.navigation_settings import NavigationSettingsStore, can_search
 from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
 from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
@@ -71,6 +72,7 @@ class T4Adapter:
         local_snapshot_provider: Any | None = None,
         playback_bridge: PlaybackBridge | None = None,
         image_bridge: ImageBridge | None = None,
+        navigation_settings: NavigationSettingsStore | None = None,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
@@ -81,10 +83,13 @@ class T4Adapter:
         self._local_snapshot_provider = local_snapshot_provider
         self._playback = playback_bridge
         self._images = image_bridge
+        self._navigation_settings = navigation_settings
         self._plugin_locks: dict[str, asyncio.Lock] = {}
         self._navigation_cards: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self._catalog_metadata: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self._navigation_slots = asyncio.Semaphore(3)
+        self._navigation_budget = 25.0
+        self._navigation_tasks: set[asyncio.Task] = set()
 
     def plugin_lock(self, source_id: str, plugin_id: str) -> asyncio.Lock:
         key = f"{source_id}:{plugin_id}"
@@ -94,6 +99,8 @@ class T4Adapter:
         return self._opaque_ids.release_memory()
 
     def close(self) -> None:
+        for task in self._navigation_tasks:
+            task.cancel()
         self._opaque_ids.close()
         self._navigation_cards.clear()
         self._catalog_metadata.clear()
@@ -183,16 +190,29 @@ class T4Adapter:
         def title_key(value: Any) -> str:
             return re.sub(r"[\W_]+", "", str(value)).casefold()
 
-        candidates = [
-            item for item in snapshot.plugins
-            if item.api not in {"csp_PianDan", "csp_Push"}
-            and item.site_options.get("searchable", 1) not in {0, "0", False}
-            and item.public_metadata().get("t4_supported", True)
-        ][:6]
+        selected = (self._navigation_settings.selection(source.source_id)
+                    if self._navigation_settings is not None else None)
+        candidates = [item for item in snapshot.plugins if can_search(item)
+                      and (selected is None or item.plugin_id in selected)]
+        if not candidates:
+            raise SubscriptionParseError("片单搜源范围为空，请在 T4 管理台勾选可搜索插件")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._navigation_budget
+        results: dict[int, Any] = {}
+        queue = iter(enumerate(candidates))
 
-        async def find(target: PluginDescriptor):
-            async with self._navigation_slots:
+        async def find():
+            for index, target in queue:
+                # A timed-out HTTP response must not free slots while its synchronous
+                # backend is still running. Finish only the active call, never its queue.
                 try:
+                    async with asyncio.timeout_at(deadline):
+                        await self._navigation_slots.acquire()
+                except TimeoutError:
+                    return
+                try:
+                    if loop.time() >= deadline:
+                        return
                     search = await self.dispatch(T4Request(
                         "search", source.source_id, target.plugin_id,
                         {"wd": title, "quick": False, "pg": 1,
@@ -208,26 +228,35 @@ class T4Adapter:
                             and str(card["vod_year"]) != str(vod["vod_year"])
                         )
                     ), None)
-                    if match is None:
-                        return None
+                    if match is None or loop.time() >= deadline:
+                        continue
                     detail = await self.dispatch(T4Request(
                         "detail", source.source_id, target.plugin_id,
                         {"ids": match["vod_id"], "client": request.params.get("client", "")},
                         request.proxy_base,
                     ))
-                    return target, next(iter(detail.get("list") or []), {})
+                    if loop.time() < deadline:
+                        results[index] = target, next(iter(detail.get("list") or []), {})
                 except Exception as exc:
                     record("navigation.source_failed", plugin=target.plugin_id,
                            error=type(exc).__name__)
-                    return None
+                finally:
+                    self._navigation_slots.release()
 
         record("navigation.search", count=len(candidates))
-        results = await asyncio.gather(*(find(target) for target in candidates))
+        tasks = [asyncio.create_task(find()) for _ in range(min(3, len(candidates)))]
+        for task in tasks:
+            self._navigation_tasks.add(task)
+            task.add_done_callback(self._navigation_tasks.discard)
+        try:
+            _, pending = await asyncio.wait(tasks, timeout=self._navigation_budget)
+        finally:
+            deadline = loop.time()
+        if pending:
+            record("navigation.budget_exhausted", count=len(results))
         flags, groups = [], []
-        for result in results:
-            if result is None:
-                continue
-            target, vod = result
+        for index in sorted(results):
+            target, vod = results[index]
             for flag, group in zip(
                 str(vod.get("vod_play_from") or "").split("$$$"),
                 str(vod.get("vod_play_url") or "").split("$$$"),
@@ -247,7 +276,7 @@ class T4Adapter:
                     groups.append("#".join(entries))
         record("navigation.results", count=len(groups))
         if not groups:
-            raise SubscriptionParseError("当前优先检索的源中未找到同名可播资源，请使用客户端全局搜索")
+            raise SubscriptionParseError("已选搜源范围在本次时限内未找到同名可播资源，请调整范围或使用全局搜索")
         item = dict(card)
         item.update(
             vod_id=str(ids[0]), vod_play_from="$$$".join(flags),

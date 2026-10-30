@@ -50,6 +50,9 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "AT 内网地址（可选）" in response.text
     assert "/playback`" in response.text
     assert 'jsonOptions("PUT"' in response.text
+    assert "片单搜源范围" in response.text
+    assert "/navigation`" in response.text
+    assert "navigation-all" in response.text
 
 
 def test_web_icons_are_served_locally() -> None:
