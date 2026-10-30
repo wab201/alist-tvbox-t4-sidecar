@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 import logging
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Any
@@ -24,6 +25,9 @@ _FIELDS = {
     "root_error", "missing_module", "error_file", "error_function", "error_line",
     "errno", "winerror",
     "mib_per_s",
+    "memory_bytes", "anon_bytes", "file_bytes", "gateway_rss_bytes", "threads", "fds",
+    "workers", "retained_workers", "proxy_workers", "busy_workers", "gate_workers",
+    "interval_seconds", "version",
 }
 _LABEL = re.compile(r"^[\w.:-]{1,100}$", re.UNICODE)
 _MIMES = {
@@ -43,11 +47,18 @@ def safe_label(value: Any) -> str:
 class TraceStore:
     """Only typed metadata is retained. Payloads, URLs and headers are never logged."""
 
-    def __init__(self, path: str | None = None, capacity: int = 2000) -> None:
+    def __init__(
+        self, path: str | None = None, capacity: int = 2000, *, console: bool = True,
+    ) -> None:
         self._events: deque[dict[str, Any]] = deque(maxlen=capacity)
         self._lock = threading.Lock()
         self._sequence = 0
         self._handler = None
+        # stderr is collected by Docker and leaves CLI stdout valid JSON.
+        self._console = logging.StreamHandler(sys.stderr) if console else None
+        self._console_window = time.monotonic()
+        self._console_count = 0
+        self._console_suppressed = 0
         if path:
             target = Path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +110,31 @@ class TraceStore:
                     "t4.trace", logging.INFO, "", 0,
                     json.dumps(event, ensure_ascii=True), (), None,
                 ))
+            if self._console is not None and stage not in {
+                "adapter.start", "worker.start", "backend.invoke", "id.resolved",
+            }:
+                now = time.monotonic()
+                if now - self._console_window >= 10:
+                    if self._console_suppressed:
+                        self._write_console({
+                            "time": event["time"], "stage": "log.suppressed",
+                            "count": self._console_suppressed, "interval_seconds": 10,
+                        })
+                    self._console_window = now
+                    self._console_count = self._console_suppressed = 0
+                # Keep heartbeat/reclamation visible even during a request flood.
+                priority = stage.startswith(("runtime.", "gateway.memory", "worker.retired"))
+                if priority or self._console_count < 100:
+                    self._write_console(event)
+                    self._console_count += 1
+                else:
+                    self._console_suppressed += 1
+
+    def _write_console(self, event: dict) -> None:
+        self._console.emit(logging.LogRecord(
+            "t4.trace", logging.INFO, "", 0,
+            json.dumps(event, ensure_ascii=True), (), None,
+        ))
 
     def events(
         self, *, trace_id: str = "", after: int = 0, limit: int = 200
@@ -123,6 +159,8 @@ class TraceStore:
     def close(self) -> None:
         if self._handler is not None:
             self._handler.close()
+        if self._console is not None:
+            self._console.close()
 
 
 @contextmanager

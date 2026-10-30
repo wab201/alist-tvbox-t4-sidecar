@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -34,7 +35,7 @@ from sidecar.compatibility.runner import CompatibilityRunner
 from sidecar.gateway.routes.compatibility import build_compatibility_router
 from sidecar.gateway.routes.plugin_proxy import build_plugin_proxy_router
 from sidecar.plugin_proxy import PluginProxyRegistry
-from sidecar.resources import IdleMemory, ResourceActivityMiddleware
+from sidecar.resources import IdleMemory, ResourceActivityMiddleware, resource_snapshot
 from sidecar.images import ImageBridge
 from sidecar.gateway.routes.images import build_images_router
 
@@ -141,9 +142,19 @@ def create_app(
     maintenance_stop = asyncio.Event()
     adapters = (runtime_adapter,) if gate_adapter is runtime_adapter else (runtime_adapter, gate_adapter)
 
+    def resources():
+        summary = worker_pool.resource_summary() if worker_pool is not None else {}
+        return {
+            **resource_snapshot(), **summary,
+            "gate_workers": gate_pool.resource_summary()["workers"],
+        }
+
     def reclaim_resources():
         for pool in (worker_pool, gate_pool):
             if pool is not None:
+                retired = pool.retire_idle()
+                if retired:
+                    trace_store.emit("worker.retired", count=retired, reason="idle_browse")
                 pool.reclaim_idle()
 
         def cleanup():
@@ -161,6 +172,7 @@ def create_app(
             )
 
     async def memory_maintenance():
+        last_report = time.monotonic()
         while True:
             try:
                 await asyncio.wait_for(maintenance_stop.wait(), timeout=15)
@@ -170,11 +182,15 @@ def create_app(
             try:
                 images.prune_expired()
                 await asyncio.to_thread(reclaim_resources)
+                if time.monotonic() - last_report >= 60:
+                    trace_store.emit("runtime.resources", **resources())
+                    last_report = time.monotonic()
             except Exception as exc:
                 trace_store.emit("memory.reclaim_failed", error=type(exc).__name__)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        trace_store.emit("runtime.started", version=runtime_settings.version, **resources())
         maintenance = asyncio.create_task(memory_maintenance())
         try:
             yield
@@ -194,6 +210,7 @@ def create_app(
             playback.close()
             await proxy_client.aclose()
             await images.aclose()
+            trace_store.emit("runtime.stopped")
             trace_store.close()
 
     app = FastAPI(
@@ -209,11 +226,14 @@ def create_app(
     app.state.compatibility = compatibility
     app.state.reclaim_resources = reclaim_resources
     app.state.memory = memory
+    app.state.resources = resources
     app.include_router(build_plugin_proxy_router(proxies, proxy_client))
     app.include_router(build_images_router(images))
     app.add_middleware(TraceMiddleware, store=trace_store)
     app.add_middleware(ResourceActivityMiddleware, memory=memory)
-    app.include_router(build_diagnostics_router(trace_store, playback, runtime_adapter))
+    app.include_router(build_diagnostics_router(
+        trace_store, playback, runtime_adapter, resources=resources,
+    ))
     app.include_router(build_compatibility_router(compatibility))
     app.include_router(build_health_router(runtime_settings))
     app.include_router(build_sources_router(runtime_sources, playback_settings))

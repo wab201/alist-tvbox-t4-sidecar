@@ -5,6 +5,11 @@ services:
       context: .
     restart: unless-stopped
     init: true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file:
       - .env
     environment:

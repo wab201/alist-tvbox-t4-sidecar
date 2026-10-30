@@ -221,6 +221,28 @@ def test_trace_store_has_bounded_memory_and_rotates_files(tmp_path):
     restored.close()
 
 
+def test_console_logs_are_redacted_bounded_and_keep_resource_heartbeats(capsys, monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("sidecar.diagnostics.time.monotonic", lambda: clock[0])
+    store = TraceStore()
+    for _ in range(150):
+        store.emit("request.complete", status=200, source="https://private.example/token",
+                   Cookie="private-cookie", url="private-url")
+    store.emit("runtime.resources", workers=4, memory_bytes=123456)
+    clock[0] = 11
+    store.emit("worker.retired", count=3, reason="idle_browse")
+    output = capsys.readouterr().err
+    rows = [json.loads(line) for line in output.splitlines()]
+    assert len(rows) == 103
+    assert rows[-3]["stage"] == "runtime.resources" and rows[-3]["workers"] == 4
+    assert rows[-2]["stage"] == "log.suppressed" and rows[-2]["count"] == 50
+    assert rows[-1]["stage"] == "worker.retired"
+    assert all(value not in output for value in (
+        "private.example", "private-cookie", "private-url",
+    ))
+    assert len(store.events(limit=2000)) == 152
+
+
 def test_manifest_only_is_not_misreported_as_verified_media():
     bridge = PlaybackBridge(transport=httpx.MockTransport(
         lambda _: httpx.Response(200, content=b"#EXTM3U\n#EXTINF:5,\nsegment.ts\n")

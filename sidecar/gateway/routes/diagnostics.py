@@ -22,9 +22,13 @@ class PlaybackCheck(BaseModel):
 
 
 def build_diagnostics_router(
-    store: TraceStore, bridge: PlaybackBridge, adapter: T4Adapter
+    store: TraceStore, bridge: PlaybackBridge, adapter: T4Adapter, *, resources=None,
 ) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/t4/api/diagnostics/resources")
+    async def resource_status() -> dict[str, Any]:
+        return resources() if resources is not None else {}
 
     @router.get("/t4/api/diagnostics/events")
     async def events(

@@ -8,6 +8,7 @@ import uuid
 import hashlib
 import time
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,6 +67,7 @@ class WorkerSession:
         self._last_activity = time.monotonic()
         self._next_reclaim = 0.0
         self._maintenance_request: str | None = None
+        self.retained = False
         self.start()
 
     @property
@@ -200,6 +202,9 @@ class WorkerSession:
         if response_or_error.request_id != request.request_id:
             raise WorkerProtocolError("worker response id mismatch")
         self.proxy_url = response_or_error.proxy_url
+        # Detail/play/action can create opaque plugin-owned state. Never evict it.
+        if method in {"detail", "play", "action"}:
+            self.retained = True
         if not response_or_error.ok:
             error = response_or_error.error or {}
             raise WorkerRemoteError(
@@ -293,7 +298,27 @@ class WorkerPool:
     def __init__(self, config: WorkerConfig | None = None) -> None:
         self._config = config or WorkerConfig()
         self._sessions: dict[str, WorkerSession] = {}
+        self._leases: dict[str, int] = {}
         self._lock = threading.Lock()
+
+    @contextmanager
+    def lease(self, source_id: str):
+        """Keep init and the following RPC atomic against idle retirement."""
+        with self._lock:
+            self._leases[source_id] = self._leases.get(source_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                remaining = self._leases[source_id] - 1
+                if remaining:
+                    self._leases[source_id] = remaining
+                else:
+                    self._leases.pop(source_id)
+
+    def has_session(self, source_id: str) -> bool:
+        with self._lock:
+            return source_id in self._sessions
 
     def _session_for(self, source_id: str) -> WorkerSession:
         with self._lock:
@@ -310,6 +335,13 @@ class WorkerPool:
         params: dict[str, Any] | None = None,
         *,
         timeout: float | None = None,
+    ) -> Any:
+        with self.lease(source_id):
+            return self._request(source_id, method, params, timeout=timeout)
+
+    def _request(
+        self, source_id: str, method: str, params: dict[str, Any] | None,
+        *, timeout: float | None,
     ) -> Any:
         session = self._session_for(source_id)
         start = time.monotonic()
@@ -357,6 +389,38 @@ class WorkerPool:
             if scheduled >= batch_size:
                 break
         return scheduled
+
+    def retire_idle(self, *, idle_seconds: float = 180, batch_size: int = 8) -> int:
+        retired = []
+        with self._lock:
+            for key, session in tuple(self._sessions.items()):
+                if self._leases.get(key) or not session._lock.acquire(blocking=False):
+                    continue
+                try:
+                    if (
+                        session.retained or session.proxy_url
+                        or session._maintenance_request is not None
+                        or time.monotonic() - session._last_activity < idle_seconds
+                    ):
+                        continue
+                    self._sessions.pop(key)
+                    retired.append(session)
+                finally:
+                    session._lock.release()
+                if len(retired) >= batch_size:
+                    break
+        for session in retired:
+            session.close()
+        return len(retired)
+
+    def resource_summary(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "workers": len(self._sessions),
+                "retained_workers": sum(s.retained for s in self._sessions.values()),
+                "proxy_workers": sum(bool(s.proxy_url) for s in self._sessions.values()),
+                "busy_workers": len(self._leases),
+            }
 
     def close(self) -> None:
         with self._lock:

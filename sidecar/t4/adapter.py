@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from contextlib import nullcontext
 import json
 from dataclasses import dataclass
 import threading
@@ -23,6 +24,7 @@ from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
 from sidecar.playback import PlaybackBridge
 from sidecar.images import ImageBridge
+from sidecar.worker.browse import BrowseContextStore
 
 
 class WorkerInvoker(Protocol):
@@ -587,6 +589,8 @@ class AtvpWorkerInvoker:
         self._initialized: dict[str, str] = {}
         self._state_lock = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
+        self._browse = BrowseContextStore()
+        self._generations: dict[str, int] = {}
 
     def _lock_for(self, runtime_key: str) -> threading.Lock:
         with self._state_lock:
@@ -597,6 +601,8 @@ class AtvpWorkerInvoker:
             self._initialized.pop(runtime_key, None)
             self._remove_proxy(runtime_key)
             self._pool.restart(runtime_key)
+            self._browse.remove(runtime_key)
+            self._generations.pop(runtime_key, None)
 
     def _remove_proxy(self, runtime_key: str) -> None:
         endpoint = self._proxy_endpoints.pop(runtime_key, None)
@@ -621,6 +627,8 @@ class AtvpWorkerInvoker:
                 self._remove_proxy(runtime_key)
             self._initialized.clear()
             self._locks.clear()
+            self._generations.clear()
+        self._browse.close()
 
     def call(
         self,
@@ -629,16 +637,20 @@ class AtvpWorkerInvoker:
         method: str,
         params: dict[str, Any],
     ) -> Any:
-        with self._lock_for(runtime_key):
+        lease = getattr(self._pool, "lease", None)
+        with self._lock_for(runtime_key), (lease(runtime_key) if lease else nullcontext()):
             params = dict(params)
             base = str(params.pop("_proxy_base", "")).rstrip("/")
             extend = plugin.worker_extend(server_proxy=bool(params.pop("_server_proxy", False)))
             previous = self._initialized.get(runtime_key)
-            if previous != extend:
+            has_session = getattr(self._pool, "has_session", None)
+            cold = previous == extend and has_session is not None and not has_session(runtime_key)
+            if previous != extend or cold:
                 self._initialized.pop(runtime_key, None)
                 self._remove_proxy(runtime_key)
-                if previous is not None:
+                if previous is not None and not cold:
                     self._pool.restart(runtime_key)
+                    self._browse.remove(runtime_key)
                 initialized = self._pool.request(
                     runtime_key,
                     "init",
@@ -646,8 +658,22 @@ class AtvpWorkerInvoker:
                 )
                 self._sync_proxy(runtime_key, (initialized or {}).get("proxy_url"))
                 self._initialized[runtime_key] = extend
+                self._generations[runtime_key] = self._generations.get(runtime_key, 0) + 1
             try:
+                generation = self._generations[runtime_key]
+                if method in {"detail", "category"}:
+                    ids = (
+                        (params.get("ids") or []) if method == "detail"
+                        else [params.get("tid", "")]
+                    )
+                    contexts = self._browse.for_detail(runtime_key, ids, generation, kind=method)
+                    for browse_method, browse_params in contexts:
+                        self._pool.request(runtime_key, browse_method, browse_params)
+                    if contexts:
+                        self._browse.restored(runtime_key, ids, generation, kind=method)
+                        record("worker.context_restored", method=method, count=len(contexts))
                 result = self._pool.request(runtime_key, method, params)
+                self._browse.remember(runtime_key, method, params, result, generation)
                 self._sync_proxy(runtime_key)
                 endpoint = self._proxy_endpoints.get(runtime_key)
                 if endpoint:

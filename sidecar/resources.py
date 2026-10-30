@@ -6,6 +6,28 @@ import gc
 import sys
 import threading
 import time
+from pathlib import Path
+
+
+def resource_snapshot() -> dict:
+    """Current Linux measurements, never the sum of shared Worker RSS."""
+    result = {}
+    root = Path("/sys/fs/cgroup")
+    try:
+        result["memory_bytes"] = int((root / "memory.current").read_text())
+        values = dict(line.split() for line in (root / "memory.stat").read_text().splitlines())
+        for field in ("anon", "file"):
+            result[field + "_bytes"] = int(values[field])
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        values = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+        result["gateway_rss_bytes"] = int(values["VmRSS"].split()[0]) * 1024
+        result["threads"] = int(values["Threads"].strip())
+        result["fds"] = len(tuple(Path("/proc/self/fd").iterdir()))
+    except (OSError, ValueError, KeyError):
+        pass
+    return result
 
 
 @lru_cache(maxsize=1)
@@ -72,7 +94,14 @@ class ResourceActivityMiddleware:
         self.app, self.memory = app, memory
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http" or scope.get("path") == "/t4/health":
+        path = scope.get("path", "")
+        root = scope.get("root_path", "").rstrip("/")
+        if root and path.startswith(root + "/"):
+            path = path[len(root):]
+        if (
+            scope["type"] != "http" or path in {"/t4/health", "/t4/", "/t4"}
+            or path.startswith(("/t4/api/diagnostics/", "/t4/assets/"))
+        ):
             await self.app(scope, receive, send)
             return
         # The ASGI call includes streaming bodies and disconnect cleanup.

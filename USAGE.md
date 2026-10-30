@@ -219,3 +219,9 @@ python -m scripts.check_compatibility --source env-at --plugin plugin-a --plugin
 普通直链不经过 Sidecar，因此没有对应的服务端媒体传输日志。
 HLS、内联 DASH、插件代理和已启用的网盘服务端通路会记录相应网络事件。
 服务端不解码视频；播放器仍需处理返回的请求头、正常重定向和实际媒体格式。
+
+NAS 的容器日志页现在直接显示脱敏运行事件，不再只有启动信息。
+空闲时每分钟仍有 `runtime.resources`，可查看 `memory_bytes`、`workers` 和
+`retained_workers`；`worker.retired` 表示空闲浏览实例已退出。
+资源详情也可访问 `/t4/api/diagnostics/resources`。日志限流不影响播放或 Web 中的关联日志。
+大量搜索后内存会分批回落；已有详情、播放或代理状态会保留，不用手动清缓存或重启容器。

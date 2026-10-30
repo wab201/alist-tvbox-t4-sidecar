@@ -198,3 +198,23 @@ def test_gateway_lifespan_releases_cold_ids_and_stops_maintenance(tmp_path):
         events = app.state.traces.events()
         assert any(row["stage"] == "gateway.memory_reclaimed" for row in events)
         assert memory.reclaim(idle_seconds=0)["reason"] == "clean"
+
+
+def test_monitoring_poll_does_not_postpone_idle_collection(tmp_path, monkeypatch):
+    monkeypatch.setattr("sidecar.resources.release_unused_memory", lambda: {
+        "collected": 0, "trimmed": False,
+    })
+    app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry())
+    with TestClient(app) as client:
+        memory = app.state.memory
+        with memory.activity():
+            pass
+        memory._last_used -= 60
+        last_used = memory._last_used
+        for path in ("/t4/", "/t4/health", "/t4/api/diagnostics/events",
+                     "/t4/api/diagnostics/resources"):
+            assert client.get(path).status_code == 200
+            assert memory._last_used == last_used
+        status = client.get("/t4/api/diagnostics/resources").json()
+        assert status["workers"] == status["busy_workers"] == status["gate_workers"] == 0
+        assert memory.reclaim()["reclaimed"]
