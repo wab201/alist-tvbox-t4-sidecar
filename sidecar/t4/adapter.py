@@ -190,6 +190,11 @@ class T4Adapter:
         def title_key(value: Any) -> str:
             return re.sub(r"[\W_]+", "", str(value)).casefold()
 
+        def year_key(value: Any) -> str:
+            text = str(value).strip()
+            years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text))
+            return next(iter(years)) if len(years) == 1 else text
+
         selected = (self._navigation_settings.selection(source.source_id)
                     if self._navigation_settings is not None else None)
         candidates = [item for item in snapshot.plugins if can_search(item)
@@ -225,7 +230,7 @@ class T4Adapter:
                         and title_key(vod.get("vod_name")) == title_key(title)
                         and not (
                             card.get("vod_year") and vod.get("vod_year")
-                            and str(card["vod_year"]) != str(vod["vod_year"])
+                            and year_key(card["vod_year"]) != year_key(vod["vod_year"])
                         )
                     ), None)
                     if match is None or loop.time() >= deadline:

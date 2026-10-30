@@ -113,6 +113,41 @@ def test_navigation_no_longer_truncates_to_six_and_respects_selection(tmp_path, 
     adapter.close()
 
 
+@pytest.mark.parametrize("year,matched", [
+    ("2026", True), ("2026 / 内地", True), ("2026年", True),
+    ("2025 / 内地", False), ("2025-2026", False), ("20260", False), ("", True),
+])
+def test_navigation_compares_year_not_region_without_matching_other_years(tmp_path, year, matched):
+    class Worker:
+        def call(self, key, plugin, method, params):
+            if method == "search":
+                return {"list": [{"vod_id": "actual", "vod_name": "Film", "vod_year": year}]}
+            return {"list": [{"vod_id": "actual", "vod_play_from": "HD",
+                             "vod_play_url": "Episode$actual-play"}]}
+
+    store = NavigationSettingsStore(tmp_path / "navigation.json")
+    store.update("source-a", ["p8"])
+    adapter = T4Adapter(
+        SourceRegistry((source(),)), Worker(), navigation_settings=store,
+        local_snapshot_provider=lambda _: SubscriptionSnapshot("source-a", 9, plugins()),
+    )
+    nav = replace(descriptor(), plugin_id="nav", api="csp_PianDan")
+    adapter._navigation_cards[("source-a", "nav", "film")] = {
+        "vod_name": "Film", "vod_year": "2026"}
+    request = T4Request("detail", "source-a", "nav", {"ids": "film"})
+    try:
+        if matched:
+            result = asyncio.run(adapter._navigation_detail(
+                request, source(), nav, SubscriptionSnapshot("source-a", 9, plugins())))
+            assert result["list"][0]["vod_play_from"] == "Source 8 · HD"
+        else:
+            with pytest.raises(ValueError, match="未找到"):
+                asyncio.run(adapter._navigation_detail(
+                    request, source(), nav, SubscriptionSnapshot("source-a", 9, plugins())))
+    finally:
+        adapter.close()
+
+
 def test_budget_returns_partial_results_without_releasing_active_backend_slots(tmp_path):
     entered = threading.Event()
     release = threading.Event()
