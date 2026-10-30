@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.5
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.6
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,14 +45,14 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用镜像标签为 `0.3.5`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.6`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.5`。
-更新到 `0.3.5` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.6`。
+更新到 `0.3.6` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
 对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
 使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
 
@@ -287,7 +287,7 @@ Sidecar，镜像使用已导入的固定标签。
 始终在原 Compose 目录操作，保留原 `.env`、数据卷及可回滚的旧镜像，不重启 AT 本体。
 通过 `docker compose ps`、`docker compose images` 核对当前实例。
 
-升级到 `0.3.5` 时保留现有 Compose 自定义配置，并确认
+升级到 `0.3.6` 时保留现有 Compose 自定义配置，并确认
 `services.t4-sidecar.init: true` 已启用；它不影响原端口、数据卷或订阅鉴权。
 
 拉取方式：将 `T4_IMAGE` 改为目标版本，执行：

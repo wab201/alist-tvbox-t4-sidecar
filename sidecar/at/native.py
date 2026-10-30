@@ -81,9 +81,12 @@ class NativeAtClient:
         if plugin.t4_endpoint:
             query = self._t4_query(method, params)
             headers = {"X-CLIENT": str(params.get("client") or "t4-sidecar")}
-            return self._request(
+            payload = self._request(
                 plugin, "/t4/v", query, headers, endpoint=plugin.t4_endpoint,
             )
+            if plugin.api == "csp_FishPanSouGroup" and method == "search":
+                return self._grouped_search(plugin, params, payload)
+            return payload
         if plugin.api == "csp_Live" and method == "play":
             play_id = str(params.get("id") or "")
             parsed = urlsplit(play_id)
@@ -116,7 +119,63 @@ class NativeAtClient:
         if plugin.api == "csp_PianDan" and method == "home":
             recommendations = self._request(plugin, path, {"t": "0"}, headers)
             payload["list"] = recommendations.get("list", [])
+        if plugin.api == "csp_FishPanSouGroup" and method == "search":
+            return self._grouped_search(plugin, params, payload)
         return payload
+
+    def _grouped_search(
+        self, plugin: PluginDescriptor, params: dict[str, Any], payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        rows = payload.get("list") or []
+        folders = [
+            row for row in rows if isinstance(row, dict) and row.get("vod_tag") == "folder"
+            and str(row.get("vod_id") or "").startswith("pgroup:")
+        ]
+        if not folders:
+            return payload
+        try:
+            page = max(1, int(params.get("pg") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        items = [dict(row) for row in rows if row not in folders]
+        warnings = list(payload.get("t4_warnings") or [])
+        total, pagecount, completed = len(items), 1, 0
+        failure = None
+        # T4 search clicks go straight to detail. Expand AT's cached directories,
+        # not their cloud shares: detail and media resolution remain on demand.
+        for folder in folders:
+            try:
+                listing = self.call(plugin, "category", {
+                    **params, "tid": folder["vod_id"], "pg": str(page),
+                })
+            except NativeAtError as exc:
+                failure = exc
+                warnings.append({
+                    "code": "group_expansion_failed",
+                    **({"upstream_status": exc.status} if exc.status is not None else {}),
+                })
+                record("navigation.group_failed", status=exc.status, reason=exc.reason)
+                continue
+            completed += 1
+            children = listing.get("list") or []
+            total += int(listing.get("total") or len(children))
+            pagecount = max(pagecount, int(listing.get("pagecount") or 1))
+            for child in children:
+                card = dict(child)
+                label = str(folder.get("vod_name") or "")
+                remarks = str(card.get("vod_remarks") or "")
+                card["vod_remarks"] = " · ".join(part for part in (label, remarks) if part)
+                items.append(card)
+        if not completed and not items and failure is not None:
+            raise failure
+        result = {
+            **payload, "list": items, "page": page, "pagecount": pagecount,
+            "limit": len(items), "total": total,
+        }
+        if warnings:
+            result["t4_warnings"] = warnings
+        record("navigation.group_expanded", count=len(items))
+        return result
 
     def _request(
         self,

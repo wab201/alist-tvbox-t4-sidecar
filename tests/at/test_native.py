@@ -246,6 +246,107 @@ def test_grouped_search_empty_home_is_not_an_invalid_json_error():
         client.close()
 
 
+@pytest.mark.parametrize("official", [False, True])
+def test_grouped_search_expands_cached_folders_without_prefetching_detail(official):
+    from dataclasses import replace
+
+    seen = []
+    plugin = builtin("csp_FishPanSouGroup")
+    if official:
+        plugin = replace(plugin, t4_endpoint="https://at.example/t4/native-token/group")
+
+    def handler(request):
+        seen.append(request)
+        query = request.url.params
+        if "wd" in query:
+            return httpx.Response(200, json={"list": [
+                {"vod_id": "pgroup:fixture:quark", "vod_name": "Quark",
+                 "vod_tag": "folder", "vod_remarks": "21 results"},
+                {"vod_id": "pgroup:fixture:115", "vod_name": "115",
+                 "vod_tag": "folder", "vod_remarks": "1 result"},
+            ]})
+        assert "ids" not in query and "id" not in query
+        assert query["pg"] == "2"
+        provider = query["t"].rsplit(":", 1)[-1]
+        return httpx.Response(200, json={
+            "page": 2, "pagecount": 2 if provider == "quark" else 1,
+            "total": 21 if provider == "quark" else 1,
+            "list": ([{"vod_id": "https://share.example/quark", "vod_name": "Real title",
+                       "vod_pic": "https://img.example/actual.jpg", "vod_remarks": "HD",
+                       "vod_play_from": "original-channel"}] if provider == "quark" else []),
+        })
+
+    client = NativeAtClient(transport=httpx.MockTransport(handler))
+    try:
+        result = client.call(plugin, "search", {"key": "Movie", "pg": "2", "quick": False})
+    finally:
+        client.close()
+    assert len(seen) == 3
+    assert result["page"] == 2 and result["pagecount"] == 2 and result["total"] == 22
+    assert result["limit"] == 1
+    card = result["list"][0]
+    assert card["vod_id"] == "https://share.example/quark"
+    assert card["vod_name"] == "Real title"
+    assert card["vod_pic"] == "https://img.example/actual.jpg"
+    assert card["vod_play_from"] == "original-channel"
+    assert "Quark" in card["vod_remarks"] and "HD" in card["vod_remarks"]
+    assert all(request.url.path == ("/t4/native-token/group" if official
+                                   else "/pansou-group/native-token") for request in seen)
+
+
+@pytest.mark.parametrize("all_fail", [False, True])
+def test_grouped_search_reports_failed_groups_without_hiding_all_group_failure(all_fail):
+    def handler(request):
+        if "wd" in request.url.params:
+            return httpx.Response(200, json={"list": [
+                {"vod_id": "pgroup:fixture:quark", "vod_name": "Quark", "vod_tag": "folder"},
+                {"vod_id": "pgroup:fixture:115", "vod_name": "115", "vod_tag": "folder"},
+            ]})
+        if all_fail or request.url.params["t"].endswith(":quark"):
+            return httpx.Response(503, json={"message": "Unavailable"})
+        return httpx.Response(200, json={"list": [
+            {"vod_id": "https://share.example/115", "vod_name": "Actual"}],
+            "pagecount": 1, "total": 1})
+
+    client = NativeAtClient(transport=httpx.MockTransport(handler))
+    try:
+        if all_fail:
+            with pytest.raises(NativeAtError):
+                client.call(builtin("csp_FishPanSouGroup"), "search", {"key": "Movie"})
+        else:
+            result = client.call(builtin("csp_FishPanSouGroup"), "search", {"key": "Movie"})
+            assert len(result["list"]) == 1
+            assert result["t4_warnings"][0]["code"] == "group_expansion_failed"
+            assert result["t4_warnings"][0]["upstream_status"] == 503
+    finally:
+        client.close()
+
+
+def test_grouped_search_keeps_ordinary_shares_and_nonsearch_folder_navigation():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"list": [
+            {"vod_id": "https://share.example/already-leaf", "vod_name": "Actual"},
+        ]})
+
+    client = NativeAtClient(transport=httpx.MockTransport(handler))
+    try:
+        result = client.call(builtin("csp_FishPanSouGroup"), "search", {"key": "Movie"})
+        client.call(builtin("csp_FishPanSouGroup"), "category", {
+            "tid": "pgroup:fixture:quark", "pg": "3",
+        })
+        client.call(builtin("csp_FishPanSou"), "search", {"key": "Movie"})
+    finally:
+        client.close()
+    assert len(seen) == 3
+    assert result == {"list": [{"vod_id": "https://share.example/already-leaf", "vod_name": "Actual"}]}
+    assert seen[1].url.params["t"] == "pgroup:fixture:quark"
+    assert seen[1].url.params["pg"] == "3"
+    assert seen[2].url.path == "/pansou/native-token"
+
+
 def test_native_emby_play_uses_the_original_emby_play_route() -> None:
     seen: list[httpx.Request] = []
 
