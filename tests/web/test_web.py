@@ -53,6 +53,8 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "片单搜源范围" in response.text
     assert "/navigation`" in response.text
     assert "navigation-all" in response.text
+    assert 'data-select="none"' in response.text
+    assert 'aria-label="筛选搜源插件"' in response.text
 
 
 def test_web_icons_are_served_locally() -> None:

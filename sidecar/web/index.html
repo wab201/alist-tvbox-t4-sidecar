@@ -570,7 +570,7 @@
       article.append(playbackForm, playbackState);
       const navigation = document.createElement("details");
       navigation.className = "navigation-settings";
-      navigation.innerHTML = '<summary>片单搜源范围</summary><form><label class="check-label"><input class="navigation-all" type="checkbox">全部可搜插件（含新增）</label><div class="navigation-options"></div><div class="toolbar"><span role="status"></span></div></form>';
+      navigation.innerHTML = '<summary>片单搜源范围</summary><form><label class="check-label"><input class="navigation-all" type="checkbox">全部可搜插件（含新增）</label><div class="source-controls"><input type="search" aria-label="筛选搜源插件" placeholder="筛选插件"><div class="toolbar"><button type="button" data-select="all">全选</button><button type="button" data-select="none">清空</button></div></div><div class="navigation-options"></div><div class="toolbar"><span role="status"></span></div></form>';
       const navForm = navigation.querySelector("form");
       const navAll = navigation.querySelector(".navigation-all");
       const navOptions = navigation.querySelector(".navigation-options");
@@ -582,6 +582,28 @@
       article.append(navigation);
       const navPath = `/t4/api/sources/${encodeURIComponent(source.id)}/navigation`;
       let navLoaded = false;
+      const navCount = () => {
+        const inputs = [...navOptions.querySelectorAll("input")];
+        navState.textContent = `已选 ${navAll.checked ? inputs.length : inputs.filter(i => i.checked).length} / ${inputs.length}`;
+      };
+      const navFilter = () => {
+        const query = navigation.querySelector('input[type="search"]').value.trim().toLowerCase();
+        navOptions.querySelectorAll("label").forEach(label => {
+          label.hidden = !label.textContent.toLowerCase().includes(query);
+        });
+      };
+      navigation.querySelector('input[type="search"]').oninput = navFilter;
+      navOptions.onchange = navCount;
+      navigation.querySelectorAll("[data-select]").forEach(button => {
+        button.onclick = () => {
+          navAll.checked = false;
+          navAll.onchange();
+          navOptions.querySelectorAll("input").forEach(input => {
+            input.checked = button.dataset.select === "all";
+          });
+          navCount();
+        };
+      });
       const renderNavigation = value => {
         navOptions.replaceChildren();
         navAll.checked = value.plugin_ids === null;
@@ -596,14 +618,15 @@
           label.append(input, document.createTextNode(`${plugin.name} · ${plugin.id}`));
           navOptions.append(label);
         });
-        navState.textContent = `已选 ${value.plugins.filter(p => p.selected).length} / ${value.plugins.length}`;
         navSave.disabled = navAll.disabled = false;
         navAll.onchange();
+        navFilter();
       };
       navAll.onchange = () => {
         navOptions.querySelectorAll("input").forEach(input => {
           input.disabled = navAll.checked;
         });
+        navCount();
       };
       const loadNavigation = async () => {
         navSave.disabled = navAll.disabled = true;
