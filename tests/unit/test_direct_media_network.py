@@ -1,4 +1,5 @@
 import re
+import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
@@ -64,7 +65,13 @@ def test_real_http_redirect_preserves_player_range_bytes_and_avoids_gateway_body
         assert response.content == (b"" if method == "HEAD" else expected)
         assert response.headers["Content-Length"] == str(len(expected))
         assert seen[-1] == (method, range_value)
-        events = app.state.traces.events()
-        closed = [event for event in events if event["stage"] == "media.closed"]
+        # The redirected CDN response may finish before the gateway's ASGI cleanup.
+        deadline = time.monotonic() + 2
+        while True:
+            events = app.state.traces.events()
+            closed = [event for event in events if event["stage"] == "media.closed"]
+            if closed or time.monotonic() >= deadline:
+                break
+            time.sleep(.01)
         assert closed and closed[-1]["bytes"] == 0
         assert any(event["stage"] == "media.redirect" for event in events)

@@ -4,6 +4,7 @@ import asyncio
 from collections import OrderedDict
 from contextlib import nullcontext
 import json
+import hashlib
 from dataclasses import dataclass
 import threading
 import time
@@ -146,6 +147,33 @@ class T4Adapter:
             raise SubscriptionParseError("source was not found")
         snapshot = await self._snapshot(source)
         plugin = snapshot.plugin_for(request.plugin_id)
+        if plugin.api == "csp_PianDan":
+            if request.module == "search" and _bool_param(request.params.get("nav_search"), False):
+                return await self._navigation_search(request, source, plugin, snapshot)
+            if request.module in {"detail", "category"}:
+                if request.module == "detail":
+                    raw = request.params.get("ids") or request.params.get("id") or ""
+                else:
+                    raw = request.params.get("t") or request.params.get("tid") or ""
+                identity = str(raw[0]) if isinstance(raw, list) and raw else str(raw)
+                metadata = self._opaque_ids.metadata(
+                    identity, source_id=source.source_id, plugin_id=plugin.plugin_id,
+                )
+                if metadata and metadata.get("target_plugin"):
+                    target = snapshot.plugin_for(metadata["target_plugin"])
+                    params = dict(request.params)
+                    if request.module == "detail":
+                        params["ids"] = metadata["target_id"]
+                    else:
+                        params["t"] = params["tid"] = metadata["target_id"]
+                    payload = await self.dispatch(T4Request(
+                        request.module, source.source_id, target.plugin_id,
+                        params, request.proxy_base,
+                    ))
+                    return {**payload, "list": [
+                        self._navigation_result(item, source, plugin, target)
+                        for item in payload.get("list") or [] if isinstance(item, dict)
+                    ]}
         if plugin.api == "csp_PianDan" and request.module == "detail":
             return await self._navigation_detail(request, source, plugin, snapshot)
         if plugin.api == "csp_PianDan" and request.module == "play":
@@ -170,6 +198,131 @@ class T4Adapter:
                 return await self._invoke(request, source, plugin)
         return await self._invoke(request, source, plugin)
 
+    def _navigation_candidates(self, source, snapshot):
+        selected = (self._navigation_settings.selection(source.source_id)
+                    if self._navigation_settings is not None else None)
+        candidates = [item for item in snapshot.plugins if can_search(item)
+                      and (selected is None or item.plugin_id in selected)]
+        if not candidates:
+            raise SubscriptionParseError("片单搜源范围为空，请在 T4 管理台勾选可搜索插件")
+        return candidates
+
+    def _navigation_result(self, vod, source, plugin, target):
+        item = dict(vod)
+        target_id = str(item.get("vod_id") or "")
+        identity = json.dumps(
+            [target.plugin_id, item.get("content_key") or target_id],
+            ensure_ascii=True, separators=(",", ":"),
+        )
+        content_key = "t4c_" + hashlib.sha256(json.dumps(
+            [source.source_id, plugin.plugin_id, identity],
+            ensure_ascii=True, separators=(",", ":"),
+        ).encode("ascii")).hexdigest()
+        item["vod_id"] = self._opaque_ids.put(OpaqueValue(
+            source.source_id, plugin.plugin_id, "detail", identity, trace_id(),
+            {"target_plugin": target.plugin_id, "target_id": target_id,
+             "content_key": content_key},
+        ))
+        item["content_key"] = content_key
+        item["t4_source"] = target.name
+        if isinstance(item.get("vod_play_url"), str):
+            flags = str(item.get("vod_play_from") or "").split("$$$")
+            groups = []
+            for group in item["vod_play_url"].split("$$$"):
+                episodes = []
+                for entry in group.split("#"):
+                    label, separator, play_id = entry.partition("$")
+                    if not separator or not play_id:
+                        continue
+                    flag = flags[len(groups)] if len(groups) < len(flags) else ""
+                    delegated = self._opaque_ids.put(OpaqueValue(
+                        source.source_id, plugin.plugin_id, "navigation",
+                        json.dumps([target.plugin_id, flag, play_id]), trace_id(),
+                    ))
+                    episodes.append(label + "$" + delegated)
+                groups.append("#".join(episodes))
+            item["vod_play_url"] = "$$$".join(groups)
+        return item
+
+    async def _navigation_search(self, request, source, plugin, snapshot):
+        keyword = str(request.params.get("wd") or request.params.get("key") or "").strip()
+        if not keyword:
+            raise SubscriptionParseError("片单搜索缺少关键词")
+        candidates = self._navigation_candidates(source, snapshot)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._navigation_budget
+        results, failures, trimmed = {}, {}, {}
+        queue = iter(enumerate(candidates))
+        title_key = lambda value: re.sub(r"[\W_]+", "", str(value)).casefold()
+        year = str(request.params.get("year") or "").strip()
+
+        def rank(item):
+            years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", str(item.get("vod_year") or ""))
+            return (title_key(item.get("vod_name")) != title_key(keyword),
+                    bool(year) and years != [year])
+
+        async def find():
+            for index, target in queue:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await self._navigation_slots.acquire()
+                except TimeoutError:
+                    return
+                try:
+                    if loop.time() >= deadline:
+                        return
+                    payload = await self.dispatch(T4Request(
+                        "search", source.source_id, target.plugin_id,
+                        {"wd": keyword, "quick": False,
+                         "pg": request.params.get("pg") or 1,
+                         "client": request.params.get("client", "")},
+                        request.proxy_base,
+                    ))
+                    if loop.time() < deadline:
+                        rows = [
+                            item for item in payload.get("list") or []
+                            if isinstance(item, dict) and item.get("vod_id")
+                            and item.get("vod_name")
+                        ]
+                        rows.sort(key=rank)
+                        trimmed[index] = max(0, len(rows) - 100)
+                        results[index] = target, rows[:100]
+                except Exception as exc:
+                    failures[index] = type(exc).__name__
+                    record("navigation.source_failed", plugin=target.plugin_id,
+                           error=type(exc).__name__)
+                finally:
+                    self._navigation_slots.release()
+
+        record("navigation.search", count=len(candidates), mode="cards")
+        tasks = [asyncio.create_task(find()) for _ in range(min(3, len(candidates)))]
+        for task in tasks:
+            self._navigation_tasks.add(task)
+            task.add_done_callback(self._navigation_tasks.discard)
+        try:
+            await asyncio.wait(tasks, timeout=self._navigation_budget)
+        finally:
+            deadline = loop.time()
+        partial = len(results) + len(failures) < len(candidates)
+        found = [(target, item) for index in sorted(results)
+                 for target, items in [results[index]] for item in items]
+        found.sort(key=lambda pair: rank(pair[1]))
+        if not found and (failures or partial):
+            raise SubscriptionParseError("片单搜源失败或超时，请稍后重新进入")
+        # Bound both native card payloads and additional identity persistence.
+        rows, size = [], 0
+        for target, item in found[:500]:
+            size += len(json.dumps(item, ensure_ascii=True).encode("ascii"))
+            if size > 768 * 1024:
+                break
+            rows.append(self._navigation_result(item, source, plugin, target))
+        truncated = sum(trimmed.values()) + len(found) - len(rows)
+        record("navigation.results", count=len(rows), mode="cards", partial=partial)
+        return {"list": rows, "t4_search": {
+            "completed": len(results), "failed": len(failures),
+            "total": len(candidates), "partial": partial, "truncated": truncated,
+        }}
+
     async def _navigation_detail(
         self, request: T4Request, source: SourceConfig, plugin: PluginDescriptor,
         snapshot: SubscriptionSnapshot,
@@ -181,6 +334,10 @@ class T4Adapter:
             plugin_id=plugin.plugin_id, kind="detail",
         )
         card = self._navigation_cards.get((source.source_id, plugin.plugin_id, raw_id))
+        if card is None and ids:
+            card = self._opaque_ids.metadata(
+                str(ids[0]), source_id=source.source_id, plugin_id=plugin.plugin_id,
+            )
         if card is None:
             raise SubscriptionParseError("片单卡片已过期，请刷新片单后重新选择")
         title = str(card.get("vod_name") or "").strip()
@@ -195,12 +352,7 @@ class T4Adapter:
             years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text))
             return next(iter(years)) if len(years) == 1 else text
 
-        selected = (self._navigation_settings.selection(source.source_id)
-                    if self._navigation_settings is not None else None)
-        candidates = [item for item in snapshot.plugins if can_search(item)
-                      and (selected is None or item.plugin_id in selected)]
-        if not candidates:
-            raise SubscriptionParseError("片单搜源范围为空，请在 T4 管理台勾选可搜索插件")
+        candidates = self._navigation_candidates(source, snapshot)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._navigation_budget
         results: dict[int, Any] = {}
@@ -338,6 +490,8 @@ class T4Adapter:
             result,
             source,
             plugin,
+            detail_id=(str(params["ids"][0]) if request.module == "detail"
+                       and len(params["ids"]) == 1 else ""),
         )
         if self._images is not None and request.module in {"home", "category", "search", "detail"}:
             for item in payload.get("list") or []:
@@ -473,6 +627,8 @@ class T4Adapter:
         result: Any,
         source: SourceConfig,
         plugin: PluginDescriptor,
+        *,
+        detail_id: str = "",
     ) -> dict[str, Any]:
         if not isinstance(result, dict):
             raise SubscriptionParseError(f"{module} result must be an object")
@@ -484,7 +640,10 @@ class T4Adapter:
             raw_list = payload.get("list")
             if isinstance(raw_list, list):
                 payload["list"] = [
-                    self._normalize_vod(item, source, plugin, module=module)
+                    self._normalize_vod(
+                        item, source, plugin, module=module,
+                        catalog_id=detail_id if len(raw_list) == 1 else "",
+                    )
                     if isinstance(item, dict)
                     else item
                     for item in raw_list
@@ -503,6 +662,7 @@ class T4Adapter:
         plugin: PluginDescriptor,
         *,
         module: str = "",
+        catalog_id: str = "",
     ) -> dict[str, Any]:
         item = dict(vod)
         if not item.get("vod_pic"):
@@ -510,8 +670,12 @@ class T4Adapter:
                 if isinstance(item.get(field), str) and item[field]:
                     item["vod_pic"] = item[field]
                     break
-        raw_id = str(item.get("vod_id") or "")
+        # A single requested detail can return a canonical ID stripped of browse context.
+        raw_id = catalog_id or str(item.get("vod_id") or "")
         if raw_id:
+            identity = json.dumps([source.source_id, plugin.plugin_id, raw_id],
+                                  ensure_ascii=True, separators=(",", ":"))
+            item["content_key"] = "t4c_" + hashlib.sha256(identity.encode("ascii")).hexdigest()
             key = (source.source_id, plugin.plugin_id, raw_id)
             if module == "detail":
                 cached = self._catalog_metadata.get(key) or {}
@@ -526,14 +690,28 @@ class T4Adapter:
                 while len(self._catalog_metadata) > 512:
                     self._catalog_metadata.popitem(last=False)
         if raw_id and plugin.api == "csp_PianDan":
+            if module in {"home", "category"} and str(item.get("vod_tag", "")).lower() != "folder":
+                item["t4_action"] = {
+                    "type": "search", "keyword": str(item.get("vod_name") or "").strip(),
+                }
+                if item.get("vod_year"):
+                    years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", str(item["vod_year"]))
+                    if len(years) == 1:
+                        item["t4_action"]["year"] = years[0]
             key = (source.source_id, plugin.plugin_id, raw_id)
             self._navigation_cards[key] = dict(item)
             self._navigation_cards.move_to_end(key)
             while len(self._navigation_cards) > 512:
                 self._navigation_cards.popitem(last=False)
         if raw_id:
+            metadata = {
+                field: str(item[field]) for field in (
+                    "vod_name", "vod_year", "type_name", "vod_pic", "content_key",
+                ) if item.get(field) is not None
+            } if plugin.api == "csp_PianDan" else None
             item["vod_id"] = self._opaque_ids.put(
-                OpaqueValue(source.source_id, plugin.plugin_id, "detail", raw_id, trace_id())
+                OpaqueValue(source.source_id, plugin.plugin_id, "detail", raw_id,
+                            trace_id(), metadata)
             )
         play_urls = item.get("vod_play_url")
         if isinstance(play_urls, str):

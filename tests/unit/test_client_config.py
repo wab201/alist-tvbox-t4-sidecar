@@ -76,6 +76,41 @@ def test_config_is_importable_and_does_not_expose_at_material(tmp_path):
         assert "ext" not in sites[0]
 
 
+@pytest.mark.parametrize("count", [172, 179])
+def test_unified_subscription_exports_every_runtime_without_sample_whitelist(tmp_path, count):
+    async def complete(_source):
+        sites = []
+        for index in range(count):
+            site = {"key": f"plugin-{index}", "name": f"Plugin {index}",
+                    "api": "csp_BiliBili" if index < 13 else "csp_PyProxy"}
+            if index >= 13:
+                raw = index < 56
+                suffix = "py" if raw else "txt"
+                site["ext"] = {
+                    "loader": "https://at.example/Atvp.py",
+                    "source": f"https://at.example/plugins/private-{index}.{suffix}",
+                    "raw": raw, "token": "private-token", "secret": "private-secret",
+                }
+            sites.append(site)
+        return {"sites": sites}
+
+    adapter = FakeAdapter()
+    app = create_app(
+        Settings(plugin_dir=str(tmp_path)), SourceRegistry((source(),)),
+        subscription_fetcher=complete, t4_adapter=adapter,
+    )
+    with TestClient(app) as client:
+        response = client.get("/t4/config.json")
+        sites = response.json()["sites"]
+        assert len(sites) == count
+        assert len({site["key"] for site in sites}) == count
+        assert [site["name"] for site in sites] == [f"Plugin {i}" for i in range(count)]
+        assert all(site["type"] == 4 for site in sites)
+        assert adapter.requests == []
+        assert "private-" not in response.text
+        assert client.get(sites[-1]["api"]).status_code == 200
+
+
 def test_subscription_has_fixed_address_and_no_signed_routes(tmp_path, monkeypatch):
     monkeypatch.setenv("T4_GATEWAY_TOKEN", "obsolete-gateway")
     monkeypatch.setenv("T4_PLUGIN_DIR", str(tmp_path))

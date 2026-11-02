@@ -11,6 +11,7 @@ from sidecar.gateway.main import create_app
 from sidecar.gateway.navigation_settings import NavigationSettingsStore, can_search
 from sidecar.gateway.source_registry import SourceRegistry
 from sidecar.t4.adapter import T4Adapter, T4Request
+from sidecar.t4.opaque import OpaqueIdStore
 from tests.t4.test_adapter import descriptor, source
 
 
@@ -32,6 +33,47 @@ def test_selection_is_atomic_persistent_and_copy_safe(tmp_path, monkeypatch):
         settings.update("a", [])
     assert settings.selection("a") == ["p8", "p1"]
     assert NavigationSettingsStore(path).selection("a") == ["p8", "p1"]
+
+
+def test_navigation_card_survives_restart_and_hot_card_eviction(tmp_path):
+    calls = []
+
+    class Worker:
+        def call(self, key, plugin, method, params):
+            calls.append(method)
+            if method == "search":
+                return {"list": [{"vod_id": "match", "vod_name": "Film", "vod_year": "2026"}]}
+            return {"list": [{"vod_id": "match", "vod_play_from": "HD",
+                             "vod_play_url": "Episode$actual-play"}]}
+
+    nav = replace(descriptor(), plugin_id="nav", api="csp_PianDan")
+    target = replace(descriptor(), plugin_id="vod", name="VOD")
+    snapshot = SubscriptionSnapshot("source-a", 2, (nav, target))
+    registry = SourceRegistry((source(),))
+    path = tmp_path / "ids.sqlite3"
+    before = T4Adapter(registry, Worker(), opaque_ids=OpaqueIdStore(path=path),
+                       local_snapshot_provider=lambda _: snapshot)
+    card = before._normalize_vod({
+        "vod_id": "tmdb:movie:1", "vod_name": "Film", "vod_year": "2026",
+    }, source(), nav, module="category")
+    before.close()
+    after = T4Adapter(registry, Worker(), opaque_ids=OpaqueIdStore(path=path),
+                      local_snapshot_provider=lambda _: snapshot)
+    try:
+        assert not after._navigation_cards
+        result = asyncio.run(after.dispatch(T4Request(
+            "detail", "source-a", "nav", {"ids": card["vod_id"]})))["list"][0]
+        assert result["content_key"] == card["content_key"]
+        assert result["vod_name"] == "Film"
+        assert result["vod_play_from"] == "VOD · HD"
+        assert calls == ["search", "detail"]
+        fresh = after._normalize_vod({
+            "vod_id": "tmdb:movie:1", "vod_name": "Film", "vod_year": "2026",
+        }, source(), nav, module="category")
+        assert fresh["vod_id"] == card["vod_id"]
+        assert fresh["content_key"] == card["content_key"]
+    finally:
+        after.close()
 
 
 def test_selection_api_lists_only_eligible_sources_and_keeps_ids(tmp_path):

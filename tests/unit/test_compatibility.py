@@ -207,6 +207,9 @@ def test_plugin_selection_only_runs_requested_plugins_and_labels_partial_scope(t
         assert result["gate"]["passed"] is True
         assert {r.plugin_id for r in runner.adapter.calls} == {"chosen"}
         assert result["sources"][0]["descriptor_count"] == 2
+        assert result["coverage"]["unselected_plugins"] == 1
+        assert result["coverage"]["all_plugins_accounted_for"] is False
+        assert result["gate"]["full_subscription_passed"] is False
     finally:
         runner.probes.close()
         bridge.close()
@@ -727,6 +730,10 @@ def test_full_size_fixture_completes_and_persists_every_entry(tmp_path):
         assert result["progress"] == {"total": 178, "completed": 178}
         assert result["summary"] == {"pass": 178}
         assert result["gate"]["passed"] is True
+        assert result["coverage"]["subscription_sites"] == 178
+        assert result["coverage"]["selected_plugins"] == 178
+        assert result["coverage"]["all_plugins_completed"] is True
+        assert result["gate"]["full_subscription_passed"] is True
         persisted = json.loads((tmp_path / "latest.json").read_text())
         assert persisted["progress"] == result["progress"]
         assert persisted["run_id"] == result["run_id"]

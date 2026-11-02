@@ -22,12 +22,17 @@ def build_compatibility_router(runner: CompatibilityRunner) -> APIRouter:
             )
             report["playback_current"] = playback_current
             if not current:
-                report["gate"].update(passed=False, reason="artifact_changed")
+                report["gate"].update(
+                    passed=False, full_subscription_passed=False, reason="artifact_changed",
+                )
             elif not playback_current:
-                report["gate"].update(passed=False, reason="playback_settings_changed")
+                report["gate"].update(
+                    passed=False, full_subscription_passed=False, reason="playback_settings_changed",
+                )
             if runner.running and report["state"] == "completed":
                 return {**report, "state": "running",
-                        "gate": {**report["gate"], "passed": False, "reason": "report_pending"}}
+                        "gate": {**report["gate"], "passed": False,
+                                 "full_subscription_passed": False, "reason": "report_pending"}}
         return report
 
     @router.get("/latest")

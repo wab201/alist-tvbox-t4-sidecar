@@ -176,6 +176,52 @@ def test_adapter_does_not_invent_play_ids_for_empty_episode_entries() -> None:
     assert episodes[2].startswith("Play$t4_")
 
 
+def test_single_detail_keeps_requested_catalog_identity_when_backend_canonicalizes():
+    class CanonicalWorker(FakeWorker):
+        def call(self, runtime_key, plugin, method, params):
+            result = super().call(runtime_key, plugin, method, params)
+            if method == "detail":
+                result["list"][0].update(vod_id="canonical-id", vod_name="")
+            return result
+
+    worker = CanonicalWorker()
+    adapter = T4Adapter(SourceRegistry((source(),)), worker, subscription_fetcher=fetcher)
+    try:
+        async def check():
+            card = (await adapter.dispatch(T4Request("home", "source-a", None, {})))["list"][0]
+            detail = (await adapter.dispatch(T4Request(
+                "detail", "source-a", None, {"ids": card["vod_id"]})))["list"][0]
+            assert detail["vod_id"] == card["vod_id"]
+            assert detail["content_key"] == card["content_key"]
+            assert detail["vod_name"] == card["vod_name"]
+            await adapter.dispatch(T4Request(
+                "detail", "source-a", None, {"ids": detail["vod_id"]}))
+            assert worker.calls[-1][2]["ids"] == ["movie-1"]
+            play_id = detail["vod_play_url"].split("$", 1)[1]
+            await adapter.dispatch(T4Request(
+                "play", "source-a", None, {"id": play_id, "flag": "Demo"}))
+            assert worker.calls[-1][2]["id"] == "raw-play-id"
+
+        asyncio.run(check())
+    finally:
+        adapter.close()
+
+
+def test_multiple_detail_results_are_not_reassigned_to_single_requested_id():
+    adapter = T4Adapter(SourceRegistry((source(),)), FakeWorker())
+    try:
+        rows = [{"vod_id": "first"}, {"vod_id": "second"}]
+        result = adapter._normalize(
+            "detail", {"list": rows}, source(), descriptor(), detail_id="requested")
+        for raw, item in zip(rows, result["list"]):
+            assert adapter.unwrap_id(item["vod_id"], source_id="source-a",
+                                     plugin_id="demo", kind="detail") == raw["vod_id"]
+        assert len({item["content_key"] for item in result["list"]}) == 2
+        assert rows == [{"vod_id": "first"}, {"vod_id": "second"}]
+    finally:
+        adapter.close()
+
+
 def test_detail_metadata_uses_only_the_exact_catalog_card_and_preserves_results():
     adapter = T4Adapter(SourceRegistry((source(),)), FakeWorker(), subscription_fetcher=fetcher)
     plugin = descriptor()

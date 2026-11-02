@@ -220,7 +220,25 @@ class CompatibilityRunner:
         ready = [row for row in rows if not row.get("excluded_from_server_gate")]
         sources_ok = bool(report["sources"]) and all(source["status"] == "pass" for source in report["sources"])
         complete = report["state"] == "completed"
-        passed = complete and current and sources_ok and bool(ready) and all(row["status"] == "pass" for row in ready)
+        selected = bool(report["options"]["plugin_ids"])
+        site_count = sum(source.get("site_count", 0) for source in report["sources"])
+        accounted = sources_ok and not selected and len(rows) == site_count
+        report["coverage"] = {
+            "subscription_sites": site_count,
+            "selected_plugins": len(rows),
+            "completed_plugins": report["progress"]["completed"],
+            "excluded_plugins": len(rows) - len(ready),
+            "unselected_plugins": max(0, site_count - len(rows)),
+            "all_plugins_accounted_for": accounted,
+            "all_plugins_completed": accounted and complete and all(
+                row["state"] == "completed" for row in rows
+            ),
+            "classifications": dict(Counter(row["classification"] for row in rows)),
+        }
+        passed = (
+            complete and current and sources_ok and (selected or accounted)
+            and bool(ready) and all(row["status"] == "pass" for row in ready)
+        )
         report["gate"] = {
             "passed": passed, "reason": "sample_gate_passed" if passed else
             ("playback_settings_changed" if not report.get("playback_current", True) else "artifact_changed") if not current else
@@ -228,6 +246,7 @@ class CompatibilityRunner:
             "incomplete_or_failed" if complete else "run_" + report["state"],
             "eligible_plugins": len(ready),
             "excluded_plugins": len(rows) - len(ready),
+            "full_subscription_passed": passed and accounted,
             "scope": "sampled_server_capabilities_not_full_client_compatibility",
         }
 
@@ -384,7 +403,9 @@ class CompatibilityRunner:
             except Exception as exc:
                 self._run_error(exc, "final_report_write")
                 report["state"] = "failed"
-                report["gate"].update(passed=False, reason="report_write_failed")
+                report["gate"].update(
+                    passed=False, full_subscription_passed=False, reason="report_write_failed",
+                )
 
     async def _check(self, source, plugin, row, options, base):
         stages = row["stages"]

@@ -86,6 +86,43 @@ def test_small_catalog_uses_hot_memory_without_synchronous_database_writes():
         store.close()
 
 
+def test_catalog_identity_is_stable_across_trace_changes_and_restart(tmp_path):
+    path = tmp_path / "ids.sqlite3"
+    store = OpaqueIdStore(path=path, capacity=1)
+    first = store.put(OpaqueValue("s", "p", "detail", "upstream-id", "trace-1",
+                                 {"vod_name": "Film", "vod_year": "2026"}))
+    second = store.put(OpaqueValue("s", "p", "detail", "upstream-id", "trace-2",
+                                  {"vod_name": "Film", "vod_year": "2026"}))
+    assert first == second
+    store.close()
+    reopened = OpaqueIdStore(path=path)
+    try:
+        assert reopened.get(first, source_id="s", plugin_id="p", kind="detail") == "upstream-id"
+        assert reopened.origin_trace(first) == "trace-2"
+        assert reopened.metadata(first, source_id="s", plugin_id="p")["vod_name"] == "Film"
+        assert reopened.metadata(first, source_id="s", plugin_id="other") is None
+        assert reopened.get(first, source_id="other", plugin_id="p", kind="detail") is None
+        assert reopened.get(first, source_id="s", plugin_id="p", kind="play") is None
+        assert reopened.put(OpaqueValue("s", "p", "detail", "upstream-id", "trace-3")) == first
+    finally:
+        reopened.close()
+
+
+def test_catalog_identity_is_written_before_idle_cleanup_or_graceful_shutdown(tmp_path):
+    path = tmp_path / "ids.sqlite3"
+    store = OpaqueIdStore(path=path)
+    token = store.put(OpaqueValue("s", "p", "detail", "catalog-id"))
+    reader = OpaqueIdStore(path=path)
+    try:
+        assert reader.get(token, source_id="s", plugin_id="p", kind="detail") == "catalog-id"
+        # Playback locators remain hot-only until normal spill/reclamation.
+        store.put(OpaqueValue("s", "p", "play", "runtime-play-id"))
+        assert reader._db.execute("SELECT COUNT(*) FROM ids").fetchone()[0] == 1
+    finally:
+        reader.close()
+        store.close()
+
+
 def test_idle_memory_skips_active_recent_and_clean_intervals(monkeypatch):
     calls = []
     monkeypatch.setattr("sidecar.resources.release_unused_memory", lambda: (

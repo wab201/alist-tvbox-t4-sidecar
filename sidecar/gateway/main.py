@@ -28,6 +28,7 @@ from sidecar.gateway.routes.uploads import build_uploads_router
 from sidecar.gateway.uploads import UploadedPluginStore
 from sidecar.at.native import NativeAtClient, NativeAtInvoker
 from sidecar.t4.adapter import AtvpWorkerInvoker, T4Adapter
+from sidecar.t4.opaque import OpaqueIdStore
 from sidecar.worker.client import WorkerConfig, WorkerPool
 from sidecar.diagnostics import TraceMiddleware, TraceStore
 from sidecar.playback import PlaybackBridge
@@ -104,6 +105,9 @@ def create_app(
         runtime_adapter = T4Adapter(
             runtime_sources,
             AtvpWorkerInvoker(worker_pool, proxies),
+            opaque_ids=OpaqueIdStore(
+                path=Path(runtime_settings.plugin_dir) / "catalog-ids.sqlite3",
+            ),
             subscription_fetcher=subscription_fetcher,
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,

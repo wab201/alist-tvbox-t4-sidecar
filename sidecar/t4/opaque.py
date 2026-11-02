@@ -6,8 +6,10 @@ from dataclasses import dataclass
 import base64
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 import threading
+import time
 import weakref
 
 
@@ -18,24 +20,44 @@ class OpaqueValue:
     kind: str
     value: str
     trace: str = ""
+    metadata: dict[str, str] | None = None
 
 
 class OpaqueIdStore:
-    """Bounded hot IDs with an automatically deleted, runtime-local disk backing."""
+    """Bounded hot IDs; optionally retain catalog identities across restarts."""
 
-    def __init__(self, *, capacity: int = 2048, max_bytes: int = 4 * 1024 * 1024) -> None:
+    def __init__(self, *, capacity: int = 2048, max_bytes: int = 4 * 1024 * 1024,
+                 path: str | Path | None = None) -> None:
         self._values: OrderedDict[str, tuple[OpaqueValue, int]] = OrderedDict()
         self._capacity, self._max_bytes, self._size = capacity, max_bytes, 0
         self._salt = secrets.token_bytes(32)
         self._lock = threading.RLock()
-        # An empty SQLite filename is a private, auto-deleted temporary database.
-        self._db = sqlite3.connect("", check_same_thread=False, isolation_level=None)
+        self._persistent = path is not None
+        self._writes = 0
+        if path is not None:
+            path = Path(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+        # Without a path, gate/probe IDs still use an auto-deleted database.
+        self._db = sqlite3.connect(str(path) if path is not None else "",
+                                   check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA cache_size=-1024")
-        self._db.execute("PRAGMA journal_mode=OFF")
-        self._db.execute("PRAGMA synchronous=OFF")
+        self._db.execute("PRAGMA journal_mode=" + ("WAL" if self._persistent else "OFF"))
+        self._db.execute("PRAGMA synchronous=" + ("NORMAL" if self._persistent else "OFF"))
         self._db.execute("PRAGMA temp_store=FILE")
-        self._db.execute("CREATE TABLE ids (token TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS ids "
+                         "(token TEXT PRIMARY KEY, value TEXT NOT NULL, updated REAL NOT NULL)")
+        if self._persistent:
+            self._db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value BLOB)")
+            self._db.execute("INSERT OR IGNORE INTO settings VALUES ('salt', ?)", (self._salt,))
+            self._salt = self._db.execute("SELECT value FROM settings WHERE key='salt'").fetchone()[0]
+            path.chmod(0o600)
+            self._prune()
         self._finalizer = weakref.finalize(self, self._db.close)
+
+    def _prune(self) -> None:
+        self._db.execute("DELETE FROM ids WHERE updated < ?", (time.time() - 30 * 86400,))
+        self._db.execute("DELETE FROM ids WHERE token IN "
+                         "(SELECT token FROM ids ORDER BY updated DESC LIMIT -1 OFFSET 20000)")
 
     def _remember(self, token: str, value: OpaqueValue, size: int) -> None:
         previous = self._values.pop(token, None)
@@ -53,10 +75,11 @@ class OpaqueIdStore:
 
     def _spill(self, entries) -> None:
         self._db.executemany(
-            "INSERT OR REPLACE INTO ids VALUES (?, ?)",
+            "INSERT OR REPLACE INTO ids VALUES (?, ?, ?)",
             ((token, json.dumps([
                 value.source_id, value.plugin_id, value.kind, value.value, value.trace,
-            ], ensure_ascii=True)) for token, (value, _) in entries),
+                value.metadata,
+            ], ensure_ascii=True), time.time()) for token, (value, _) in entries),
         )
 
     def _lookup(self, token: str) -> OpaqueValue | None:
@@ -65,8 +88,11 @@ class OpaqueIdStore:
             if hot is not None:
                 self._values.move_to_end(token)
                 return hot[0]
-            row = self._db.execute("SELECT value FROM ids WHERE token=?", (token,)).fetchone()
+            row = self._db.execute("SELECT value, updated FROM ids WHERE token=?", (token,)).fetchone()
             if row is None:
+                return None
+            if self._persistent and row[1] < time.time() - 30 * 86400:
+                self._db.execute("DELETE FROM ids WHERE token=?", (token,))
                 return None
             value = OpaqueValue(*json.loads(row[0]))
             self._remember(token, value, len(row[0]) + len(token) + 256)
@@ -75,12 +101,29 @@ class OpaqueIdStore:
     def put(self, value: OpaqueValue) -> str:
         raw = json.dumps([
             value.source_id, value.plugin_id, value.kind, value.value, value.trace,
+            value.metadata,
         ], ensure_ascii=True)
-        digest = hashlib.blake2b(raw.encode("ascii"), key=self._salt, digest_size=18).digest()
+        identity = json.dumps([
+            value.source_id, value.plugin_id, value.kind, value.value,
+        ], ensure_ascii=True) if value.kind == "detail" else raw
+        digest = hashlib.blake2b(identity.encode("ascii"), key=self._salt, digest_size=18).digest()
         token = "t4_" + base64.urlsafe_b64encode(digest).decode("ascii")
         with self._lock:
+            if self._persistent and value.kind == "detail":
+                self._spill([(token, (value, len(raw)))])
+                self._writes += 1
+                if self._writes % 256 == 0:
+                    self._prune()
             self._remember(token, value, len(raw) + len(token) + 256)
         return token
+
+    def metadata(self, token: str, *, source_id: str, plugin_id: str) -> dict[str, str] | None:
+        value = self._lookup(token)
+        if value is None or (value.source_id, value.plugin_id, value.kind) != (
+            source_id, plugin_id, "detail",
+        ):
+            return None
+        return dict(value.metadata) if value.metadata is not None else None
 
     def get(
         self,
