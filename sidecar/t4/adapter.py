@@ -22,6 +22,7 @@ from sidecar.at.subscription import (
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.navigation_settings import NavigationSettingsStore, can_search
 from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
+from sidecar.t4.navigation import NavigationSearches
 from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
 from sidecar.playback import PlaybackBridge
@@ -91,13 +92,14 @@ class T4Adapter:
         self._navigation_slots = asyncio.Semaphore(3)
         self._navigation_budget = 25.0
         self._navigation_tasks: set[asyncio.Task] = set()
+        self._navigation_searches = NavigationSearches()
 
     def plugin_lock(self, source_id: str, plugin_id: str) -> asyncio.Lock:
         key = f"{source_id}:{plugin_id}"
         return self._plugin_locks.setdefault(key, asyncio.Lock())
 
     def release_memory(self) -> int:
-        return self._opaque_ids.release_memory()
+        return self._opaque_ids.release_memory() + self._navigation_searches.prune()
 
     def close(self) -> None:
         for task in self._navigation_tasks:
@@ -105,6 +107,7 @@ class T4Adapter:
         self._opaque_ids.close()
         self._navigation_cards.clear()
         self._catalog_metadata.clear()
+        self._navigation_searches.runs.clear()
 
     async def reset_plugin(self, source_id: str, plugin_id: str) -> None:
         for key in tuple(self._catalog_metadata):
@@ -249,6 +252,9 @@ class T4Adapter:
         if not keyword:
             raise SubscriptionParseError("片单搜索缺少关键词")
         candidates = self._navigation_candidates(source, snapshot)
+        if _bool_param(request.params.get("nav_incremental"), False):
+            return await self._navigation_incremental(
+                request, source, plugin, candidates, keyword)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._navigation_budget
         results, failures, trimmed = {}, {}, {}
@@ -322,6 +328,94 @@ class T4Adapter:
             "completed": len(results), "failed": len(failures),
             "total": len(candidates), "partial": partial, "truncated": truncated,
         }}
+
+    async def _navigation_incremental(self, request, source, plugin, candidates, keyword):
+        try:
+            offset = max(0, int(request.params.get("nav_offset") or 0))
+            limit = max(1, min(100, int(request.params.get("nav_limit") or 22)))
+        except (ValueError, TypeError):
+            raise SubscriptionParseError("搜索分页参数无效") from None
+        if offset > 500:
+            raise SubscriptionParseError("搜索分页超出结果范围")
+        year = str(request.params.get("year") or "").strip()
+        key = hashlib.sha256(json.dumps([
+            source.source_id, plugin.plugin_id, keyword, year, request.proxy_base,
+            str(request.params.get("client") or ""),
+            [item.plugin_id for item in candidates],
+        ], ensure_ascii=True).encode()).hexdigest()
+        run, created = self._navigation_searches.get(
+            key, str(request.params.get("nav_session") or ""), offset,
+            len(candidates), self._navigation_budget)
+        if created:
+            task = asyncio.create_task(self._collect_navigation(
+                run, request, source, plugin, candidates, keyword, year))
+            self._navigation_tasks.add(task)
+            task.add_done_callback(self._navigation_tasks.discard)
+        result = await run.window(offset, limit)
+        record("navigation.window", count=len(result["list"]), offset=offset,
+               partial=result["t4_search"]["partial"])
+        return result
+
+    async def _collect_navigation(self, run, request, source, plugin,
+                                  candidates, keyword, year):
+        queue = iter(candidates)
+        title_key = lambda value: re.sub(r"[\W_]+", "", str(value)).casefold()
+
+        def rank(item):
+            years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)",
+                               str(item.get("vod_year") or ""))
+            return (title_key(item.get("vod_name")) != title_key(keyword),
+                    bool(year) and years != [year])
+
+        async def find():
+            for target in queue:
+                try:
+                    async with asyncio.timeout_at(run.deadline):
+                        await self._navigation_slots.acquire()
+                except TimeoutError:
+                    return
+                try:
+                    if time.monotonic() >= run.deadline:
+                        return
+                    payload = await self.dispatch(T4Request(
+                        "search", source.source_id, target.plugin_id,
+                        {"wd": keyword, "quick": False, "pg": 1,
+                         "client": request.params.get("client", "")},
+                        request.proxy_base))
+                    if time.monotonic() >= run.deadline:
+                        return
+                    rows = [row for row in payload.get("list") or []
+                            if isinstance(row, dict) and row.get("vod_id")
+                            and row.get("vod_name")]
+                    rows.sort(key=rank)
+                    run.truncated += max(0, len(rows) - 100)
+                    run.append(rows[:100], lambda row:
+                               self._navigation_result(row, source, plugin, target))
+                    run.completed += 1
+                except Exception as exc:
+                    if time.monotonic() < run.deadline:
+                        run.failed += 1
+                    record("navigation.source_failed", plugin=target.plugin_id,
+                           error=type(exc).__name__)
+                finally:
+                    run.changed.set()
+                    self._navigation_slots.release()
+
+        record("navigation.search", count=len(candidates), mode="incremental")
+        tasks = [asyncio.create_task(find()) for _ in range(min(3, len(candidates)))]
+        for task in tasks:
+            self._navigation_tasks.add(task)
+            task.add_done_callback(self._navigation_tasks.discard)
+        try:
+            await asyncio.wait(tasks, timeout=max(0, run.deadline - time.monotonic()))
+        finally:
+            # A synchronous worker can outlive the response budget. It retains its
+            # slot until completion, but cannot mutate a finished snapshot.
+            run.deadline = min(run.deadline, time.monotonic())
+            run.done = True
+            run.changed.set()
+            record("navigation.results", count=len(run.rows), mode="incremental",
+                   partial=run.completed + run.failed < run.total)
 
     async def _navigation_detail(
         self, request: T4Request, source: SourceConfig, plugin: PluginDescriptor,

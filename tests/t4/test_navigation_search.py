@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 import json
 import threading
+import time
 
 from fastapi.testclient import TestClient
 import pytest
@@ -222,3 +223,145 @@ def test_budget_keeps_active_slots_and_does_not_start_late_work(tmp_path):
             adapter.close()
 
     asyncio.run(run())
+
+
+def test_incremental_first_window_does_not_wait_for_slow_source_and_is_append_only(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    class Progressive(SearchWorker):
+        def call(self, key, plugin, method, params):
+            assert method == "search"
+            self.calls.append((plugin.plugin_id, method, params))
+            if plugin.plugin_id == "p1":
+                entered.set()
+                release.wait(4)
+            return {"list": [
+                {"vod_id": str(i), "vod_name": "Film", "vod_year": "2026"}
+                for i in range(35)]}
+
+    async def run():
+        worker = Progressive()
+        adapter, _ = setup_adapter(tmp_path, worker)
+        request = T4Request("search", "source-a", "nav", {
+            "wd": "Film", "nav_search": True, "nav_incremental": True,
+            "nav_offset": 0, "nav_limit": 22})
+        try:
+            start = time.monotonic()
+            first = await adapter.dispatch(request)
+            assert time.monotonic() - start < 1
+            assert entered.is_set()
+            assert first["t4_search"]["pending"]
+            assert first["t4_search"]["completed"] == 1
+            assert len(first["list"]) == 22
+            assert all(row["t4_source"] == "Source 8" for row in first["list"])
+            session = first["t4_search"]["session"]
+            release.set()
+            await asyncio.gather(*adapter._navigation_tasks)
+            pages = await asyncio.gather(*(adapter.dispatch(replace(request, params={
+                **request.params, "nav_session": session, "nav_offset": offset}))
+                for offset in (0, 22, 44, 66)))
+            assert pages[0]["list"] == first["list"]
+            assert [len(p["list"]) for p in pages] == [22, 22, 22, 4]
+            assert all(p["total"] == 70 for p in pages)
+            assert not any(p["t4_search"]["pending"] for p in pages)
+            ids = [r["content_key"] for page in pages for r in page["list"]]
+            assert len(set(ids)) == 70
+            assert len(worker.calls) == 2
+            assert adapter._navigation_slots._value == 3
+        finally:
+            release.set()
+            await asyncio.gather(*adapter._navigation_tasks)
+            adapter.close()
+
+    asyncio.run(run())
+
+
+def test_incremental_budget_freezes_results_and_keeps_worker_slot(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(SearchWorker):
+        def call(self, key, plugin, method, params):
+            if plugin.plugin_id == "p1":
+                entered.set()
+                release.wait(4)
+                raise RuntimeError("late failure")
+            return super().call(key, plugin, method, params)
+
+    async def run():
+        adapter, _ = setup_adapter(tmp_path, Slow())
+        adapter._navigation_budget = 0.05
+        request = T4Request("search", "source-a", "nav", {
+            "wd": "Film", "nav_search": True, "nav_incremental": True})
+        try:
+            result = await adapter.dispatch(request)
+            assert entered.is_set() and result["t4_search"]["partial"]
+            assert not result["t4_search"]["pending"]
+            assert result["t4_search"]["completed"] == 1
+            assert result["t4_search"]["failed"] == 0
+            assert adapter._navigation_slots._value == 2
+            release.set()
+            await asyncio.gather(*adapter._navigation_tasks)
+            replay = await adapter.dispatch(replace(request, params={
+                **request.params, "nav_session": result["t4_search"]["session"]}))
+            assert replay == result
+            assert adapter._navigation_slots._value == 3
+        finally:
+            release.set()
+            await asyncio.gather(*adapter._navigation_tasks)
+            adapter.close()
+
+    asyncio.run(run())
+
+
+def test_incremental_no_results_failure_and_session_mismatch(tmp_path):
+    async def run():
+        worker = SearchWorker()
+        worker.empty = True
+        adapter, _ = setup_adapter(tmp_path, worker)
+        request = T4Request("search", "source-a", "nav", {
+            "wd": "Film", "nav_search": True, "nav_incremental": True})
+        try:
+            result = await adapter.dispatch(request)
+            assert not result["t4_search"]["pending"] and result["total"] == 0
+            session = result["t4_search"]["session"]
+            with pytest.raises(ValueError, match="会话已过期"):
+                await adapter.dispatch(replace(request, params={
+                    **request.params, "wd": "Other", "nav_session": session}))
+            adapter._navigation_searches.runs.clear()
+            worker.broken = {"p1", "p8"}
+            with pytest.raises(ValueError, match="失败或超时"):
+                await adapter.dispatch(request)
+        finally:
+            await asyncio.gather(*adapter._navigation_tasks)
+            adapter.close()
+
+    asyncio.run(run())
+
+
+def test_incremental_sessions_and_payloads_are_bounded(tmp_path):
+    from sidecar.t4.navigation import NavigationSearches
+
+    sessions = NavigationSearches()
+    for i in range(8):
+        sessions.get(str(i), "", 0, 2, 25)
+    with pytest.raises(ValueError, match="片单过多"):
+        sessions.get("ninth", "", 0, 2, 25)
+    run = next(iter(sessions.runs.values()))
+    run.done = True
+    run.touched -= 121
+    sessions.get("ninth", "", 0, 2, 25)
+    assert len(sessions.runs) == 8
+    transformed = []
+    rows = [{"vod_id": str(i), "vod_name": "Film", "vod_content": "x" * 20000}
+            for i in range(200)]
+    run.append(rows, lambda row: transformed.append(row) or row)
+    assert run.size <= 768 * 1024
+    assert len(run.rows) < 40
+    assert len(transformed) == len(run.rows)
+    assert run.truncated == 200 - len(run.rows)
+    assert len(run.rows) + run.truncated == 200
+    for cached in sessions.runs.values():
+        cached.done = True
+        cached.touched -= 121
+    assert sessions.prune() == 8
+    assert not sessions.runs
