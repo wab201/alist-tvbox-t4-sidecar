@@ -22,6 +22,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up client helper build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Verify optional FM helper builds from source
+        run: |
+          python scripts/build_fm_accelerator.py --sdk "$ANDROID_HOME" --output "$RUNNER_TEMP/fm-accelerator.jar"
+          python -c "import os,zipfile; from pathlib import Path; shipped=Path('sidecar/client_assets/fm-accelerator.jar'); rebuilt=Path(os.environ['RUNNER_TEMP'])/'fm-accelerator.jar'; a=zipfile.ZipFile(shipped); b=zipfile.ZipFile(rebuilt); assert a.read('t4-build.json')==b.read('t4-build.json')"
+
       - name: Prepare container runtime directories
         run: |
           sudo mkdir -p /data/plugins /data/logs /data/reports

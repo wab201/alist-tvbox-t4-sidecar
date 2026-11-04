@@ -13,6 +13,7 @@ from sidecar.gateway.routes.profiles import require_profile
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.playback import PlaybackBridge, PlaybackError
 from sidecar.worker.client import WorkerRemoteError, WorkerTimeoutError
+from sidecar.client_acceleration import ClientAcceleration, can_probe
 
 
 def build_t4_router(
@@ -20,6 +21,7 @@ def build_t4_router(
     adapter: T4Adapter,
     playback: PlaybackBridge | None = None,
     profiles: T4ProfileStore | None = None,
+    acceleration: ClientAcceleration | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -52,6 +54,7 @@ def build_t4_router(
         client_name = request.headers.get("X-CLIENT")
         if client_name and "client" not in params:
             params["client"] = client_name
+        client_session = str(params.pop("t4_client", "") or "")
 
         source_id = str(params.pop("source", "") or "")
         if not source_id:
@@ -77,6 +80,14 @@ def build_t4_router(
             )
             if module == "play" and playback is not None:
                 result = await asyncio.to_thread(playback.prepare, result, str(request.base_url))
+                if (
+                    acceleration is not None and client_session and plugin_id is not None
+                    and can_probe({**dict(request.headers), "x-client": params.get("client", "")}, "fm")
+                ):
+                    result = acceleration.wrap(
+                        client_session, result, str(request.base_url), playback,
+                        profile=profile_id, source=source_id, plugin=plugin_id,
+                    )
             return result
         except PluginPolicyDenied as exc:
             raise HTTPException(403, detail={

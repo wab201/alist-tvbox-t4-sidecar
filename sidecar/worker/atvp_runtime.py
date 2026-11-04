@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import requests
+from sidecar.at.play_policy import drive_play_type
 from sidecar.worker.host import PluginHost
 
 
@@ -81,8 +82,7 @@ class AtvpRuntime:
             ):
                 # A server worker has no spring.jar device-side proxy to discover.
                 self._spider._resolve_local_proxy_base = lambda: None
-            if payload.get("_t4_server_proxy") is True:
-                self._configure_server_proxy()
+            self._configure_cloud_playback(server_proxy=payload.get("_t4_server_proxy") is True)
             name = self._spider.getName()
         return {
             "result": self._json_value(result),
@@ -98,21 +98,28 @@ class AtvpRuntime:
     def memory(self):
         return self._host.memory
 
-    def _configure_server_proxy(self) -> None:
+    def _configure_cloud_playback(self, *, server_proxy: bool) -> None:
         spider = self._spider
-        if not hasattr(spider, "_load_inner_spider_class"):
+        if (
+            not hasattr(spider, "_load_inner_spider_class")
+            or not getattr(spider, "_backend_api", "")
+        ):
             return
         endpoint = spider._build_backend_endpoint("play")
         fetch = spider.fetch
 
-        def server_fetch(url, *args, **kwargs):
+        def cloud_fetch(url, *args, **kwargs):
             if url == endpoint:
-                kwargs["params"] = {**(kwargs.get("params") or {}), "type": ""}
+                params = dict(kwargs.get("params") or {})
+                params["type"] = drive_play_type(
+                    str(params.get("id") or ""), server_proxy=server_proxy,
+                )
+                kwargs["params"] = params
             return fetch(url, *args, **kwargs)
 
         # Keep driver settings available to the inner spider and its filters.
         # Suppress only the ATVP device-proxy handoff, not plugin capabilities.
-        spider.fetch = server_fetch
+        spider.fetch = cloud_fetch
         if hasattr(spider, "_resolve_local_proxy_base"):
             spider._resolve_local_proxy_base = lambda: None
 

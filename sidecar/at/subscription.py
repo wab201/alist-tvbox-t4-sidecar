@@ -52,6 +52,7 @@ class PluginDescriptor:
             "token": self.token,
             "secret": self.secret,
             "local_proxy_config": self.local_proxy_config,
+            "t4_play_type": "t4" if server_proxy else "t4-direct",
         }
         if self.data is not None:
             payload["data"] = self.data
@@ -74,6 +75,7 @@ class PluginDescriptor:
         if self.plugin_type == "official_t4":
             metadata.update(
                 transport="official_t4",
+                playback_policy_owner="at",
                 execution_owner="at",
                 compatibility_mode="official_remote_plugin",
                 capabilities=["home", "category", "search", "detail", "play"],
@@ -84,6 +86,7 @@ class PluginDescriptor:
                 metadata["native_route"] = route
                 if self.t4_endpoint:
                     metadata["transport"] = "official_t4"
+                    metadata["playback_policy_owner"] = "at"
                 capabilities = ["home", "category", "search", "detail", "play"]
                 if self.api == "csp_PianDan":
                     metadata["delegated_capabilities"] = ["detail", "play"]

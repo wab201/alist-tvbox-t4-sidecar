@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from sidecar.at.play_policy import drive_play_type
 from sidecar.at.subscription import PluginDescriptor, _builtin_route
 from sidecar.diagnostics import record
 
@@ -58,6 +59,8 @@ class NativeAtClient:
         params: dict[str, Any],
     ) -> dict[str, Any]:
         if plugin.t4_endpoint and plugin.plugin_type == "official_t4":
+            if method == "play":
+                record("playback.policy", backend="official_t4", reason="at_managed")
             if method == "action":
                 raise NativeAtUnsupportedError(
                     "official AT plugin endpoint does not expose standalone actions"
@@ -79,6 +82,8 @@ class NativeAtClient:
                 "to search other sources, not a standalone detail or play API"
             )
         if plugin.t4_endpoint:
+            if method == "play":
+                record("playback.policy", backend="official_t4", reason="at_managed")
             query = self._t4_query(method, params)
             headers = {"X-CLIENT": str(params.get("client") or "t4-sidecar")}
             payload = self._request(
@@ -103,7 +108,7 @@ class NativeAtClient:
                 return {"parse": 0, "jx": 0, "url": play_id, "header": {}}
         if method in {"play", "action"}:
             path = self._play_route(plugin) if method == "play" else "/play"
-            query = self._play_query(plugin, params)
+            query = self._play_query(plugin, params, cloud_play=method == "play")
         else:
             path = _builtin_route(plugin.api)
             if not path:
@@ -417,6 +422,8 @@ class NativeAtClient:
         cls,
         plugin: PluginDescriptor,
         params: dict[str, Any],
+        *,
+        cloud_play: bool = True,
     ) -> dict[str, Any]:
         play_id = str(params.get("id") or "")
         if not play_id:
@@ -432,7 +439,8 @@ class NativeAtClient:
             "id": play_id,
             "from": str(params.get("from") or "jar"),
             "type": (
-                "" if params.get("_server_proxy") and cls._play_route(plugin) == "/play"
+                drive_play_type(play_id, server_proxy=bool(params.get("_server_proxy")))
+                if cloud_play and cls._play_route(plugin) == "/play"
                 else str(params.get("type") or "client-proxy")
             ),
             **(

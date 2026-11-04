@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.12
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.13
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,14 +45,14 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用镜像标签为 `0.3.12`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.13`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.12`。
-更新到 `0.3.12` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.13`。
+更新到 `0.3.13` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
 对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
 使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
 
@@ -275,6 +275,8 @@ HTTPS 由其他代理终止时，该代理需传递实际外部协议；不要�
 镜像默认启用 Uvicorn 代理头处理，Compose 设置 `FORWARDED_ALLOW_IPS=*`。
 同时保留 GET/POST 请求体和 `Range`、`If-Range`，不要遗漏 `/t4/media/`、`/t4/proxy/`
 或 `/t4/images/`。
+使用 FM 能力探测时还要完整转发 `/t4/acceleration/`，保留 POST 正文与 HEAD，
+不要强制缓存能力探测 JAR 或带会话的订阅响应。
 若 AT 自身也使用 `/t4/`，不要将同域整段路径同时分配给两个后端，改用独立域名。
 
 反代后检查 `/t4/health`、`/t4/config.json`，再检查订阅内站点 API 是否使用相同公网地址。
@@ -349,6 +351,22 @@ python -m uvicorn sidecar.gateway.main:app --host 0.0.0.0 --port 8765 --no-acces
 直接运行 Python 不自动加载 `.env`，不要添加多个 `--workers`。
 需要分发安装包时可执行 `python -m pip wheel --no-deps --wheel-dir dist .`；
 wheel 包含 Web 与运行时资源，但不包含 Node.js。
+
+### 构建可选 FM 加速组件
+
+仓库随源码包含轻量 JAR，容器运行时不需要 Java 或 Android SDK。
+修改 `client/fm/` 后，需先用 JDK 和 Android SDK 的 platform/build-tools 重建，再构建 wheel 或镜像：
+
+```bash
+python scripts/build_fm_accelerator.py --sdk "$ANDROID_HOME" --java-home "$JAVA_HOME"
+python -m pytest tests/client tests/unit/test_client_acceleration.py -o addopts='' -q
+docker build -t alist-tvbox-t4-sidecar:local .
+```
+
+Windows 可使用同一 Python 命令，将两个路径替换为本机 SDK 与 JDK 目录。
+编译用的 `Spider` ABI 桩只供编译，不打入 DEX；实际运行使用 FM 自带的父类。
+JAR 内 `t4-build.json` 记录输入源码哈希，CI 从源码重建后再运行测试和构建镜像。
+若主动移除该可选 JAR，容器仍提供纯 T4，不会下发失效的客户端加速入口。
 
 ## 部署排查
 

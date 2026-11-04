@@ -43,6 +43,8 @@ from sidecar.gateway.routes.images import build_images_router
 from sidecar.gateway.profiles import T4ProfileStore
 from sidecar.gateway.routes.profiles import build_profiles_router
 from sidecar.gateway.client_cors import ClientCORSMiddleware
+from sidecar.client_acceleration import ClientAcceleration
+from sidecar.gateway.routes.acceleration import build_acceleration_router
 
 
 def create_app(
@@ -95,6 +97,7 @@ def create_app(
         Path(runtime_settings.plugin_dir) / "navigation.json",
     )
     profiles = T4ProfileStore(Path(runtime_settings.plugin_dir) / "profiles.json")
+    acceleration = ClientAcceleration(profiles)
     subscription_resolver = CachedSubscriptionResolver(
         subscription_fetcher,
         ttl=runtime_settings.subscription_cache_ttl,
@@ -172,7 +175,7 @@ def create_app(
                 pool.reclaim_idle()
 
         def cleanup():
-            count = playback.prune_expired()
+            count = playback.prune_expired() + acceleration.prune()
             for adapter in adapters:
                 if isinstance(adapter, T4Adapter):
                     count += adapter.release_memory()
@@ -224,6 +227,7 @@ def create_app(
             playback.close()
             await proxy_client.aclose()
             await images.aclose()
+            acceleration.close()
             trace_store.emit("runtime.stopped")
             trace_store.close()
 
@@ -241,6 +245,8 @@ def create_app(
     app.state.reclaim_resources = reclaim_resources
     app.state.memory = memory
     app.state.resources = resources
+    app.state.acceleration = acceleration
+    app.include_router(build_acceleration_router(acceleration))
     app.include_router(build_plugin_proxy_router(proxies, proxy_client))
     app.include_router(build_images_router(images))
     app.add_middleware(TraceMiddleware, store=trace_store)
@@ -264,6 +270,7 @@ def create_app(
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,
             profiles=profiles,
+            acceleration=acceleration,
         )
     )
     app.include_router(
@@ -278,9 +285,11 @@ def create_app(
     app.include_router(
         build_uploads_router(runtime_settings, runtime_sources, upload_store, runtime_adapter)
     )
-    app.include_router(build_t4_router(runtime_sources, runtime_adapter, playback, profiles))
+    app.include_router(build_t4_router(
+        runtime_sources, runtime_adapter, playback, profiles, acceleration,
+    ))
     app.include_router(
-        build_fm_router(runtime_sources, runtime_adapter, playback, profiles)
+        build_fm_router(runtime_sources, runtime_adapter, playback, profiles, acceleration)
     )
     app.include_router(build_web_router())
     app.mount(

@@ -52,7 +52,7 @@ def test_vod_detail_to_play_consumes_client_ac_and_preserves_media_headers(
         if request.url.params["id"] != raw_play_id:
             return httpx.Response(400, json={"message": "invalid site parameter"})
         assert request.url.params["from"] == "jar"
-        assert request.url.params["type"] == "client-proxy"
+        assert request.url.params["type"] == "t4-direct"
         return httpx.Response(200, json={
             "parse": 0, "jx": 0, "url": media_url, "header": headers,
         })

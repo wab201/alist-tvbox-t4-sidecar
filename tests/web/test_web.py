@@ -46,7 +46,10 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert 'id="trace-live"' in response.text
     assert 'id="export-traces"' in response.text
     assert "/t4/api/diagnostics/check" in response.text
-    assert "服务端加速" in response.text
+    assert "直连优先（自动分流）" in response.text
+    assert "AT 后端代理" in response.text
+    assert "取链策略由 AT 管理" in response.text
+    assert "playback_policy_owner" in response.text
     assert "AT 内网地址（可选）" in response.text
     assert "/playback`" in response.text
     assert 'jsonOptions("PUT"' in response.text

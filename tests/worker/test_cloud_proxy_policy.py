@@ -25,7 +25,11 @@ class Spider(Base):
 
 
 @pytest.mark.parametrize("encrypted", [False, True], ids=["raw", "secspider"])
-def test_server_proxy_keeps_inner_provider_config_and_only_changes_at_play_request(tmp_path, monkeypatch, encrypted):
+@pytest.mark.parametrize("server_proxy", [False, True])
+@pytest.mark.parametrize("play_id", ["1@99", "msubep-20-1"])
+def test_cloud_policy_keeps_inner_provider_config_and_only_changes_at_play_request(
+    tmp_path, monkeypatch, encrypted, server_proxy, play_id,
+):
     path = tmp_path / ("plugin.txt" if encrypted else "plugin.py")
     loader = ""
     if encrypted:
@@ -48,14 +52,18 @@ def test_server_proxy_keeps_inner_provider_config_and_only_changes_at_play_reque
             "api": "https://at.example", "source": str(path),
             "loader": loader, "raw": not encrypted, "token": "fixture-token",
             "secspider_loader": "self",
-            "local_proxy_config": configs, "_t4_server_proxy": True,
+            "local_proxy_config": configs, "_t4_server_proxy": server_proxy,
             "data": {"config_keys": list(configs)},
         }).encode()).decode())
         assert runtime.home()["list"] == [{"vod_id": "PAN115"}]
         assert runtime._spider._localProxyConfig == configs
         assert ast.literal_eval(runtime._spider._inner.options["local_proxy_config"]) == configs
-        assert runtime.play("PAN115", "1@99", [])["url"].endswith("/1@99")
-        assert calls == [("https://at.example/play/fixture-token", {"id": "1@99", "type": ""})]
+        # The pinned legacy loader predates logical IDs; its backend request hook is shared.
+        result = (runtime._spider._play(play_id) if play_id.startswith("msubep-")
+                  else runtime.play("PAN115", play_id, []))
+        assert result["url"].endswith("/1@99")
+        expected = "t4" if server_proxy or play_id.startswith("msubep-") else "t4-direct"
+        assert calls == [("https://at.example/play/fixture-token", {"id": play_id, "type": expected})]
         runtime._spider.fetch("https://plugin.example/api", params={"type": "client-proxy"})
         assert calls[-1] == ("https://plugin.example/api", {"type": "client-proxy"})
     finally:
@@ -68,19 +76,39 @@ def test_newer_atvp_local_proxy_discovery_is_disabled_without_clearing_config():
     calls = []
     runtime._spider = SimpleNamespace(
         _load_inner_spider_class=lambda _: None,
+        _backend_api="https://at.example",
         _build_backend_endpoint=lambda _: "https://at.example/play/token",
         _localProxyConfig=configs,
         _resolve_local_proxy_base=lambda: calls.append("scan"),
         fetch=lambda *args, **kwargs: (args, kwargs),
     )
     try:
-        runtime._configure_server_proxy()
+        runtime._configure_cloud_playback(server_proxy=True)
         assert runtime._spider._localProxyConfig is configs
         assert runtime._spider._resolve_local_proxy_base() is None and calls == []
         _, values = runtime._spider.fetch(
             "https://at.example/play/token", params={"id": "1@99", "type": "client-proxy"},
         )
-        assert values["params"] == {"id": "1@99", "type": ""}
+        assert values["params"] == {"id": "1@99", "type": "t4"}
+    finally:
+        runtime._spider = None
+        runtime.close()
+
+
+def test_standalone_loader_without_at_backend_is_not_given_a_cloud_request_hook():
+    runtime = AtvpRuntime()
+    fetch = lambda *args, **kwargs: (args, kwargs)
+
+    def unexpected_endpoint(_):
+        raise AssertionError("a standalone plugin has no AT playback endpoint")
+
+    runtime._spider = SimpleNamespace(
+        _load_inner_spider_class=lambda _: None, _backend_api="",
+        _build_backend_endpoint=unexpected_endpoint, fetch=fetch,
+    )
+    try:
+        runtime._configure_cloud_playback(server_proxy=False)
+        assert runtime._spider.fetch is fetch
     finally:
         runtime._spider = None
         runtime.close()

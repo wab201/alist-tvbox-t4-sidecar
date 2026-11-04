@@ -606,7 +606,7 @@ class T4Adapter:
                         item["vod_pic"], request.proxy_base, plugin.backend_api,
                         rules=plugin.image_headers,
                     )
-        if request.module == "play" and server_proxy and self._playback is not None:
+        if request.module == "play" and self._playback is not None:
             payload = self._playback.relay_at(
                 payload, request.proxy_base, backend_api=plugin.backend_api,
                 token=plugin.token, internal_url=source.at_internal_url,

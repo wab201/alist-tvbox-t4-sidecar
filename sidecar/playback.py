@@ -185,19 +185,41 @@ class PlaybackBridge:
         ):
             return None
         # A redirect cannot transfer cookies established only in the server's HTTP session.
-        if any(
-            response.headers.get("set-cookie")
-            or response.request.headers.get("cookie")
-            or response.request.headers.get("authorization")
-            for response in [*upstream.history, upstream]
-        ):
+        if self._credential_session(upstream):
             return None
         record("media.redirect", parent_trace=asset.trace, reason="headerless_resource", bytes=0)
         return httpx.Response(302, headers={
             "Location": asset.url, "Content-Length": "0", "Cache-Control": "no-store",
         }, stream=httpx.ByteStream(b""))
 
-    def _request(self, asset: MediaAsset, method: str, headers: dict) -> httpx.Response:
+    @staticmethod
+    def _credential_session(response: httpx.Response) -> bool:
+        return any(
+            item.headers.get("set-cookie") or item.request.headers.get("cookie")
+            or item.request.headers.get("authorization")
+            for item in [*response.history, response]
+        )
+
+    def _at_redirect_response(
+        self, asset: MediaAsset, upstream: httpx.Response, credential_bound: bool,
+    ) -> httpx.Response | None:
+        target = upstream.next_request
+        if (
+            asset.kind != "at_proxy" or not asset.redirectable or asset.headers
+            or credential_bound or target is None
+            or target.headers.get("cookie") or target.headers.get("authorization")
+            or not self._direct_target(str(target.url))
+            or urlsplit(str(target.url)).path.lower().endswith((".m3u8", ".mpd"))
+        ):
+            return None
+        record("media.redirect", parent_trace=asset.trace, reason="at_public_redirect", bytes=0)
+        return httpx.Response(302, headers={
+            "Location": str(target.url), "Content-Length": "0", "Cache-Control": "no-store",
+        }, stream=httpx.ByteStream(b""))
+
+    def _request(
+        self, asset: MediaAsset, method: str, headers: dict, *, redirect: bool = False,
+    ) -> httpx.Response:
         url = asset.url
         client = self.client
         resolved = self._proxies.resolve(url) if self._proxies is not None else None
@@ -205,14 +227,35 @@ class PlaybackBridge:
             url, client = resolved, self._local_client
         elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
             client = self._local_client
-        response = client.send(client.build_request(method, url, headers=headers), stream=True)
+        handoff = redirect and asset.kind == "at_proxy" and asset.redirectable and not asset.headers
+        response = client.send(
+            client.build_request(method, url, headers=headers),
+            stream=True, follow_redirects=not handoff,
+        )
+        if handoff:
+            credential_bound = False
+            for count in itertools.count():
+                credential_bound |= self._credential_session(response)
+                result = self._at_redirect_response(asset, response, credential_bound)
+                if result is not None:
+                    response.close()
+                    return result
+                next_request = response.next_request
+                if next_request is None:
+                    break
+                response.close()
+                if count >= client.max_redirects:
+                    raise httpx.TooManyRedirects("AT media redirect limit", request=next_request)
+                response = client.send(next_request, stream=True, follow_redirects=False)
         if self._retry_server_agent(asset, headers, response):
             response.close()
             headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
             return client.send(client.build_request(method, url, headers=headers), stream=True)
         return response
 
-    async def _request_async(self, asset: MediaAsset, method: str, headers: dict) -> httpx.Response:
+    async def _request_async(
+        self, asset: MediaAsset, method: str, headers: dict, *, redirect: bool = False,
+    ) -> httpx.Response:
         url = asset.url
         client = self.media_client
         resolved = self._proxies.resolve(url) if self._proxies is not None else None
@@ -220,7 +263,26 @@ class PlaybackBridge:
             url, client = resolved, self._local_media_client
         elif asset.local_transport or urlsplit(url).hostname in {"127.0.0.1", "::1", "localhost"}:
             client = self._local_media_client
-        response = await client.send(client.build_request(method, url, headers=headers), stream=True)
+        handoff = redirect and asset.kind == "at_proxy" and asset.redirectable and not asset.headers
+        response = await client.send(
+            client.build_request(method, url, headers=headers),
+            stream=True, follow_redirects=not handoff,
+        )
+        if handoff:
+            credential_bound = False
+            for count in itertools.count():
+                credential_bound |= self._credential_session(response)
+                result = self._at_redirect_response(asset, response, credential_bound)
+                next_request = response.next_request
+                if result is None and next_request is None:
+                    break
+                with anyio.CancelScope(shield=True):
+                    await response.aclose()
+                if result is not None:
+                    return result
+                if count >= client.max_redirects:
+                    raise httpx.TooManyRedirects("AT media redirect limit", request=next_request)
+                response = await client.send(next_request, stream=True, follow_redirects=False)
         if self._retry_server_agent(asset, headers, response):
             with anyio.CancelScope(shield=True):
                 await response.aclose()
@@ -231,7 +293,7 @@ class PlaybackBridge:
     @staticmethod
     def _retry_server_agent(asset: MediaAsset, headers: dict, response: httpx.Response) -> bool:
         if (
-            asset.redirectable and response.status_code in {401, 403}
+            asset.redirectable and asset.kind != "at_proxy" and response.status_code in {401, 403}
             and not asset.headers and "user-agent" in httpx.Headers(headers)
         ):
             asset.redirectable = False
@@ -294,7 +356,7 @@ class PlaybackBridge:
         for name in ("range", "if-range"):
             if request_headers.get(name):
                 headers[name] = request_headers[name]
-        if asset.redirectable and request_headers.get("user-agent"):
+        if asset.redirectable and not asset.headers and request_headers.get("user-agent"):
             headers["User-Agent"] = request_headers["user-agent"]
         return dict(headers)
 
@@ -376,7 +438,7 @@ class PlaybackBridge:
         headers = self._media_headers(asset, request_headers)
         requested_range = request_headers.get("range", "")
         if asset.kind != "segment":
-            upstream = self._request(asset, method, headers)
+            upstream = self._request(asset, method, headers, redirect=redirect)
             result = self._redirect_response(asset, upstream) if redirect else None
             if result is not None:
                 upstream.close()
@@ -423,7 +485,7 @@ class PlaybackBridge:
     ) -> httpx.Response:
         headers = self._media_headers(asset, request_headers)
         if asset.kind != "segment":
-            upstream = await self._request_async(asset, method, headers)
+            upstream = await self._request_async(asset, method, headers, redirect=redirect)
             result = self._redirect_response(asset, upstream) if redirect else None
             if result is not None:
                 with anyio.CancelScope(shield=True):
@@ -516,6 +578,10 @@ class PlaybackBridge:
             None, upstream, dict(payload.get("header") or {}), mime,
             trace_id(), time.monotonic(), "hls" if is_hls else "at_proxy",
             local_transport=True,
+            redirectable=(
+                not is_hls and not payload.get("header")
+                and not target.path[len(prefix):].startswith("msubep-")
+            ),
         ), suffix)
         output = {**payload, "url": base.rstrip("/") + "/t4/media/" + key,
                   "header": {}, "parse": 0, "jx": 0, "playUrl": ""}
@@ -524,6 +590,14 @@ class PlaybackBridge:
         record("playback.cloud_relay", route="internal" if internal_url else "subscription",
                backend="at_powerlist", asset=key)
         return output
+
+    def client_relay(self, url: str, headers: dict[str, str], base: str) -> str:
+        """Relay exactly the client's object; never resolve a second cloud-drive link."""
+        key = self._put(MediaAsset(
+            None, url, dict(headers), "application/octet-stream",
+            trace_id(), time.monotonic(), redirectable=False,
+        ), ".bin")
+        return base.rstrip("/") + "/t4/media/" + key
 
     def prepare(self, payload: dict[str, Any], base: str) -> dict[str, Any]:
         output = dict(payload)
@@ -557,14 +631,21 @@ class PlaybackBridge:
             if media_format:
                 output["format"] = media_format
             record("playback.server_parser_complete")
+        if isinstance(url, str) and url.startswith(base.rstrip("/") + "/t4/media/"):
+            if self.get(urlsplit(url).path.rsplit("/", 1)[-1]) is not None:
+                return output
+        if (
+            isinstance(url, str) and url.startswith(base.rstrip("/") + "/t4/proxy/")
+            and self._proxies is not None
+            and self._proxies.get(urlsplit(url).path.rsplit("/", 1)[-1]) is not None
+        ):
+            return output
         if isinstance(url, str) and urlsplit(url).scheme in {"http", "https"} and (
             urlsplit(url).path.lower().endswith(".m3u8")
             or str(output.get("format", "")).split(";")[0] in {
                 "application/vnd.apple.mpegurl", "application/x-mpegurl",
             }
         ) and output.get("parse") in {None, 0, "0"} and output.get("jx") in {None, 0, "0"}:
-            if urlsplit(url).path.startswith("/t4/media/") and self.get(urlsplit(url).path.rsplit("/", 1)[-1]):
-                return output
             headers = output.get("header") or {}
             if not isinstance(headers, dict):
                 raise PlaybackError("invalid_play_headers")
@@ -577,7 +658,29 @@ class PlaybackBridge:
             record("playback.hls_http", asset=key)
             return output
         if not isinstance(url, str) or not url.startswith("data:application/dash+xml"):
-            # Ordinary media and its required headers belong to the player.
+            headers = output.get("header") or {}
+            if not isinstance(headers, dict):
+                raise PlaybackError("invalid_play_headers")
+            if isinstance(url, str) and urlsplit(url).scheme in {"http", "https"}:
+                private = not self._direct_target(url)
+                credential_bound = any(
+                    name.lower() in {"cookie", "authorization"} and value
+                    for name, value in headers.items()
+                )
+                if private or credential_bound:
+                    key = self._put(MediaAsset(
+                        None, url, dict(headers), "application/octet-stream",
+                        trace_id(), time.monotonic(),
+                        local_transport=private,
+                    ), ".bin")
+                    output.update(
+                        url=base.rstrip("/") + "/t4/media/" + key, header={},
+                        parse=0, jx=0, playUrl="",
+                    )
+                    record("playback.http_bridge", asset=key,
+                           reason="private_target" if private else "server_credentials")
+                    return output
+            # Public media and non-credential headers belong to the player.
             # A URL's extension is not evidence of its container or codecs.
             record("playback.direct_http", header_count=len(output.get("header") or {}))
             return output

@@ -90,7 +90,7 @@ def test_cloud_policy_uses_existing_backend_and_never_reparses_url(mode, kind):
         calls.append(("native", request))
         if kind == "builtin":
             assert request.url.params["id"] == "1@99"
-            assert request.url.params.get("type", "") == ("" if mode == "server" else "client-proxy")
+            assert request.url.params["type"] == ("t4" if mode == "server" else "t4-direct")
         else:
             assert request.url.params["play"] == "1@99"
         return httpx.Response(200, json={
@@ -110,8 +110,8 @@ def test_cloud_policy_uses_existing_backend_and_never_reparses_url(mode, kind):
             "play", "demo", "cloud", {"play": "1@99"}, "https://public.example",
         )))
         assert len(calls) == 1
-        assert ("/t4/media/" in result["url"]) == (mode == "server")
-        if mode == "server":
+        assert "/t4/media/" in result["url"]
+        if "/t4/media/" in result["url"]:
             asset = bridge.get(urlsplit(result["url"]).path.rsplit("/", 1)[-1])
             assert asset.kind == "at_proxy"
             assert asset.url == "https://at.example/at/p/fixture-token/1@99.mkv"

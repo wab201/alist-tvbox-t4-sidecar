@@ -7,11 +7,79 @@ import threading
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 import httpx
+import pytest
 
 from sidecar.gateway.config import Settings
 from sidecar.gateway.main import create_app
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from tests.unit.test_media_disconnect import serving, wait_for
+
+
+@pytest.mark.parametrize("mode", ["direct", "server"])
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_real_at_redirect_keeps_cdn_download_on_client_without_gateway_body(tmp_path, monkeypatch, mode, method):
+    upstream_app = FastAPI()
+    calls = []
+    origin = ""
+    data = bytes(range(256)) * 128
+
+    @upstream_app.get("/play/fixture-token")
+    async def play(request: Request):
+        assert request.query_params["id"] == "1@99"
+        assert request.query_params["type"] == ("t4-direct" if mode == "direct" else "t4")
+        return {"url": origin + "/p/fixture-token/1@99.mkv", "header": {}}
+
+    @upstream_app.api_route("/p/fixture-token/1@99.mkv", methods=["GET", "HEAD"])
+    async def at_proxy(request: Request):
+        calls.append("at")
+        assert request.headers["range"] == "bytes=8192-16383"
+        assert request.headers["if-range"] == '"fixture"'
+        return Response(status_code=302, headers={
+            "Location": origin + "/cdn/file.mkv?sign=exact%2Fvalue",
+        })
+
+    @upstream_app.api_route("/cdn/file.mkv", methods=["GET", "HEAD"])
+    async def cdn(request: Request):
+        calls.append("cdn")
+        assert request.url.query == "sign=exact%2Fvalue"
+        assert request.headers["range"] == "bytes=8192-16383"
+        assert request.headers["if-range"] == '"fixture"'
+        assert request.headers["user-agent"] == "socket-player"
+        return Response(
+            b"" if request.method == "HEAD" else data[8192:16384], status_code=206,
+            headers={"Content-Range": f"bytes 8192-16383/{len(data)}", "Content-Length": "8192"},
+        )
+
+    with serving(upstream_app) as upstream:
+        origin = upstream
+        source = SourceConfig(
+            "demo", "Demo", subscription_url=origin + "/sub/fixture-token/0",
+            cloud_playback=mode,
+        )
+
+        async def subscription(_):
+            return {"sites": [{
+                "key": "cloud", "name": "Cloud", "api": "csp_XiaoYa", "type": 3,
+                "ext": {"api": origin, "token": "fixture-token"},
+            }]}
+
+        app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry((source,)), subscription)
+        # A task-owned loopback CDN replaces a public target only in this socket fixture.
+        monkeypatch.setattr(app.state.playback, "_direct_target",
+                            lambda url: url.startswith(origin + "/cdn/"))
+        with serving(app) as gateway, httpx.Client(timeout=5, trust_env=False) as client:
+            payload = client.get(gateway + "/t4/fm/demo/cloud/", params={"play": "1@99"}).json()
+            response = client.request(method, payload["url"], headers={
+                "Range": "bytes=8192-16383", "If-Range": '"fixture"', "User-Agent": "socket-player",
+            }, follow_redirects=True)
+            assert response.status_code == 206
+            assert response.content == (b"" if method == "HEAD" else data[8192:16384])
+            assert len(response.history) == 1 and response.history[0].status_code == 302
+            assert calls == ["at", "cdn"]
+            assert wait_for(lambda: any(e["stage"] == "media.closed" for e in app.state.traces.events()))
+            events = app.state.traces.events()
+            assert [e["bytes"] for e in events if e["stage"] == "media.closed"] == [0]
+            assert any(e["stage"] == "media.redirect" and e["reason"] == "at_public_redirect" for e in events)
 
 
 def test_full_t4_cloud_flow_internal_origin_range_and_concurrent_sessions(tmp_path):
@@ -24,7 +92,7 @@ def test_full_t4_cloud_flow_internal_origin_range_and_concurrent_sessions(tmp_pa
     @upstream_app.get("/play/fixture-token")
     async def play(request: Request):
         assert request.query_params["id"] == "1@99"
-        assert request.query_params.get("type", "") == ""
+        assert request.query_params["type"] == "t4"
         with lock:
             calls.append("play")
         return {

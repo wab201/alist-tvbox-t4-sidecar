@@ -125,7 +125,9 @@
       <h2 id="subscription-heading">影视订阅</h2>
       <button id="copy-subscription" class="icon" title="复制影视订阅地址" aria-label="复制影视订阅地址" disabled><img src="/t4/assets/icons/copy.svg" alt=""></button>
     </div>
+    <label>客户端模式<select id="subscription-mode"><option value="auto">自动识别（未知客户端使用纯 T4）</option><option value="fm">FM 能力探测</option><option value="pure">纯 T4</option></select></label>
     <div class="subscription-entry"><code id="subscription-url">正在读取</code></div>
+    <span id="client-acceleration-state" class="badge"></span>
     <p id="local-address-warning" hidden>当前为本机地址，电视端不可访问。请通过 NAS 或电脑的局域网 IP 打开管理台。</p>
   </section>
   <section aria-labelledby="profiles-heading">
@@ -456,11 +458,32 @@
     subscriptionUrl = new URL(payload.subscription_path, location.origin).href;
     $("#subscription-url").textContent = subscriptionUrl;
     $("#copy-subscription").disabled = false;
+    updateSubscriptionMode();
     $("#local-address-warning").hidden = !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
   }
   $("#copy-subscription").onclick = () => copyText(subscriptionUrl)
     .then(() => setStatus("影视订阅地址已复制", "ok"))
     .catch(error => setStatus(error.message, "error"));
+  function subscriptionAddress(path) {
+    const url = new URL(path, location.origin);
+    const mode = $("#subscription-mode").value;
+    if (mode !== "auto") url.searchParams.set("client", mode);
+    return url.href;
+  }
+  function updateSubscriptionMode() {
+    subscriptionUrl = subscriptionAddress("/t4/config.json");
+    $("#subscription-url").textContent = subscriptionUrl;
+    const profileCode = $("#profile-url");
+    if (profileCode.textContent) {
+      profileCode.textContent = subscriptionAddress(new URL(profileCode.textContent).pathname);
+    }
+  }
+  $("#subscription-mode").onchange = updateSubscriptionMode;
+  request("/t4/api/client-acceleration").then(value => {
+    $("#client-acceleration-state").textContent = value.available
+      ? `FM 探测：已确认 ${value.ready} · 等待 ${value.pending}`
+      : "FM 加速组件未构建 · 纯 T4";
+  }).catch(() => {});
   function profileVisible() {
     const query = $("#profile-filter").value.trim().toLocaleLowerCase();
     return profilePlugins.filter(p => !query || `${p.name} ${p.source_name} ${p.plugin_id}`.toLocaleLowerCase().includes(query));
@@ -568,7 +591,7 @@
     profileWhite = new Set(activeProfile.whitelist);
     profileBlack = new Set(activeProfile.blacklist);
     profileDirty = false;
-    $("#profile-url").textContent = new URL(activeProfile.subscription_path, location.origin).href;
+    $("#profile-url").textContent = subscriptionAddress(activeProfile.subscription_path);
     $("#profile-delete").disabled = identifier === "default";
     $("#profile-filter").value = "";
     profilePlugins = [];
@@ -601,7 +624,7 @@
   }
   $("#profile-all").onclick = () => { profileVisible().filter(p => p.supported).forEach(p => setProfilePlugin(p, true)); renderProfilePlugins(); };
   $("#profile-none").onclick = () => { profileVisible().filter(p => p.supported).forEach(p => setProfilePlugin(p, false)); renderProfilePlugins(); };
-  $("#profile-copy").onclick = () => copyText(new URL(activeProfile.subscription_path, location.origin).href)
+  $("#profile-copy").onclick = () => copyText(subscriptionAddress(activeProfile.subscription_path))
     .then(() => setStatus("独立订阅地址已复制", "ok")).catch(error => setStatus(error.message, "error"));
   $("#profile-new").onclick = async () => {
     if (!await discardProfileChanges()) return;
@@ -814,7 +837,7 @@
       article.querySelector(".toolbar").append(refresh, smoke, copy);
       const playbackForm = document.createElement("form");
       playbackForm.className = "playback-controls";
-      playbackForm.innerHTML = '<label>网盘播放<select><option value="direct">直连</option><option value="server">服务端加速</option></select></label><label>AT 内网地址（可选）<input type="url" placeholder="http://at:4567" autocomplete="off"></label>';
+      playbackForm.innerHTML = '<label>原订阅网盘策略<select><option value="direct">直连优先（自动分流）</option><option value="server">AT 后端代理</option></select></label><label>AT 内网地址（可选）<input type="url" placeholder="http://at:4567" autocomplete="off"></label>';
       const mode = playbackForm.querySelector("select");
       const internal = playbackForm.querySelector("input");
       const savePlayback = iconButton("save", "保存播放设置", "save-playback");
@@ -824,7 +847,11 @@
       const playbackState = document.createElement("div");
       playbackState.className = "playback-state muted";
       playbackState.setAttribute("role", "status");
-      article.append(playbackForm, playbackState);
+      const playbackPolicy = document.createElement("div");
+      playbackPolicy.className = "playback-state muted";
+      playbackPolicy.hidden = true;
+      playbackPolicy.textContent = "当前插件为官方 T4 · 取链策略由 AT 管理";
+      article.append(playbackForm, playbackState, playbackPolicy);
       const navigation = document.createElement("details");
       navigation.className = "navigation-settings";
       navigation.innerHTML = '<summary>片单搜源范围</summary><form><label class="check-label"><input class="navigation-all" type="checkbox">全部可搜插件（含新增）</label><div class="source-controls"><input type="search" aria-label="筛选搜源插件" placeholder="筛选插件"><div class="toolbar"><button type="button" data-select="all">全选</button><button type="button" data-select="none">清空</button></div></div><div class="navigation-options"></div><div class="toolbar"><span role="status"></span></div></form>';
@@ -907,7 +934,7 @@
       };
       mode.disabled = internal.disabled = true;
       const playbackPath = `/t4/api/sources/${encodeURIComponent(source.id)}/playback`;
-      mode.onchange = () => { internal.disabled = mode.value !== "server"; };
+      mode.onchange = () => { internal.disabled = false; };
       playbackForm.onsubmit = async event => {
         event.preventDefault();
         mode.disabled = internal.disabled = savePlayback.disabled = true;
@@ -932,6 +959,7 @@
       const selected = () => items.find(plugin => plugin.id === select.value);
       select.onchange = () => {
         const plugin = selected();
+        playbackPolicy.hidden = plugin?.playback_policy_owner !== "at";
         selectedSites.set(source.id, select.value);
         smoke.disabled = !plugin?.fm_path;
         copy.disabled = !plugin?.fm_path && !plugin?.client_config_path;

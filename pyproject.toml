@@ -44,3 +44,4 @@ version = {attr = "sidecar.__version__"}
 [tool.setuptools.package-data]
 "sidecar.web" = ["index.html", "assets/icons/*.svg", "assets/icons/LICENSE"]
 "sidecar.worker" = ["vendor/*.py", "vendor/*.mjs", "vendor/README.md"]
+"sidecar.client_assets" = ["*.jar"]

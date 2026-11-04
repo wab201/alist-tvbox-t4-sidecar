@@ -123,7 +123,7 @@ def test_parser_transport_failure_does_not_expose_url_or_request_headers():
         bridge.close()
 
 
-def test_protected_direct_video_and_headers_are_preserved_for_player():
+def test_protected_direct_video_keeps_cookie_on_server_and_preserves_upstream_headers():
     bridge = PlaybackBridge()
     try:
         original = {
@@ -131,8 +131,11 @@ def test_protected_direct_video_and_headers_are_preserved_for_player():
             "header": {"Cookie": "secret", "Referer": "https://page.example"},
         }
         result = bridge.prepare(original, "https://public.example")
-        assert result == original
-        assert bridge._size == 0
+        assert result["url"].startswith("https://public.example/t4/media/")
+        assert result["header"] == {} and result["parse"] == 0
+        asset = bridge.get(result["url"].rsplit("/", 1)[-1])
+        assert asset.url == original["url"] and asset.headers == original["header"]
+        assert bridge._size == 1
     finally:
         bridge.close()
 
