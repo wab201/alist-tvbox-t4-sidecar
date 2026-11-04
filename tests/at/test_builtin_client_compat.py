@@ -189,10 +189,12 @@ def test_native_push_export_is_singleton_and_does_not_leak_into_metadata(tmp_pat
         config = client.get("/t4/config.json")
         assert config.status_code == 200
         sites = config.json()["sites"]
-        assert len(sites) == 3
-        assert len({site["key"] for site in sites}) == 3
+        assert len(sites) == 4
+        assert len({site["key"] for site in sites}) == 4
         assert [site for site in sites if site["key"] == "push_agent"] == [PUSH]
         assert len([site for site in sites if site["type"] == 4]) == 2
+        assert sites[-1]["api"] == "csp_T4Relay"
+        assert sites[-1]["hide"] == 1
         snapshot = client.get("/t4/api/sources/at/subscription")
         plugin = snapshot.json()["plugins"][1]
         assert plugin["client_config_path"] == "/t4/config.json"

@@ -13,7 +13,7 @@ from sidecar.gateway.fm import (
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.profiles import T4ProfileStore
 from sidecar.gateway.routes.profiles import require_profile
-from sidecar.client_acceleration import ClientAcceleration, can_probe
+from sidecar.client_acceleration import ClientAcceleration
 
 
 def build_client_config_router(
@@ -87,7 +87,6 @@ def build_client_config_router(
         profile_id = request.path_params.get("profile_id", "default")
         profile = require_profile(profiles, profile_id)
         response.headers["Cache-Control"] = "no-store"
-        response.headers["Vary"] = "User-Agent, X-Client"
         groups = await asyncio.gather(*(
             sites_for(source, str(request.base_url).rstrip("/"), profile)
             for source in source_registry.all()
@@ -102,7 +101,8 @@ def build_client_config_router(
         output = {"sites": sites}
         if (
             acceleration is not None
-            and can_probe(request.headers, request.query_params.get("client", "auto"))
+            and request.query_params.get("client") != "pure"
+            and any(site.get("type") == 4 for site in sites)
         ):
             session = acceleration.offer(str(request.base_url), profile_id)
             if session is not None:
@@ -112,7 +112,7 @@ def build_client_config_router(
                         site["api"] += "?t4_client=" + session.id
                 sites.append({
                     "key": "t4_acceleration_" + session.id,
-                    "name": "FM 下载调度", "api": "csp_T4Relay", "type": 3,
+                    "name": "下载增强", "api": "csp_T4Relay", "type": 3,
                     "jar": output["spider"], "hide": 1, "indexs": 0,
                     "searchable": 0, "quickSearch": 0, "filterable": 0, "changeable": 0,
                 })

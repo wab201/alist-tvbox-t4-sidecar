@@ -14,7 +14,7 @@ from sidecar.gateway.routes.profiles import require_profile
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.playback import PlaybackBridge, PlaybackError
 from sidecar.worker.client import WorkerRemoteError, WorkerTimeoutError
-from sidecar.client_acceleration import ClientAcceleration, can_probe
+from sidecar.client_acceleration import ClientAcceleration
 
 
 def build_fm_router(
@@ -97,10 +97,7 @@ def build_fm_router(
             )
             if module == "play" and playback is not None:
                 result = await asyncio.to_thread(playback.prepare, result, str(request.base_url))
-                if (
-                    acceleration is not None and client_session
-                    and can_probe({**dict(request.headers), "x-client": params.get("client", "")}, "fm")
-                ):
+                if acceleration is not None and client_session:
                     result = acceleration.wrap(
                         client_session, result, str(request.base_url), playback,
                         profile=profile_id, source=source_id, plugin=plugin_id,

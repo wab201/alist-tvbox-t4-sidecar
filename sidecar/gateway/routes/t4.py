@@ -13,7 +13,7 @@ from sidecar.gateway.routes.profiles import require_profile
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.playback import PlaybackBridge, PlaybackError
 from sidecar.worker.client import WorkerRemoteError, WorkerTimeoutError
-from sidecar.client_acceleration import ClientAcceleration, can_probe
+from sidecar.client_acceleration import ClientAcceleration
 
 
 def build_t4_router(
@@ -82,7 +82,6 @@ def build_t4_router(
                 result = await asyncio.to_thread(playback.prepare, result, str(request.base_url))
                 if (
                     acceleration is not None and client_session and plugin_id is not None
-                    and can_probe({**dict(request.headers), "x-client": params.get("client", "")}, "fm")
                 ):
                     result = acceleration.wrap(
                         client_session, result, str(request.base_url), playback,

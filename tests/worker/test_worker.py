@@ -37,7 +37,8 @@ def test_worker_protocol_round_trips_json_data() -> None:
 
 
 def test_worker_timeout_restarts_source_session() -> None:
-    with WorkerPool(WorkerConfig(request_timeout=1.0)) as pool:
+    # Keep cold startup separate from the deliberately short RPC deadline below.
+    with WorkerPool() as pool:
         old = pool.request("source-a", "inspect")
         with pytest.raises(WorkerTimeoutError):
             pool.request(

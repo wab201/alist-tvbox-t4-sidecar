@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from sidecar.client_acceleration import ClientAcceleration, can_probe
+from sidecar.client_acceleration import ClientAcceleration
 from sidecar.gateway.config import Settings
 from sidecar.gateway.main import create_app
 from sidecar.gateway.profiles import T4ProfileStore
@@ -41,8 +41,8 @@ def play(client, api, value="demo"):
     return client.get(str(httpx.URL(api).copy_merge_params({"play": value})))
 
 
-def offer(client, path="/t4/config.json?client=fm"):
-    response = client.get(path, headers={"User-Agent": "okhttp/4.12.0"})
+def offer(client, path="/t4/config.json", headers=None):
+    response = client.get(path, headers=headers or {"User-Agent": "okhttp/4.12.0"})
     assert response.status_code == 200
     config = response.json()
     assert config["sites"][-1]["hide"] == 1
@@ -64,37 +64,36 @@ def confirm(client, properties, **changes):
     ).json()["ready"]
 
 
-@pytest.mark.parametrize("agent,client_name,mode,expected", [
-    ("okhttp/4.12", "", "auto", False),
-    ("Dalvik Android", "", "auto", False),
-    ("FongMi/4", "", "auto", True),
-    ("okhttp/4.12", "fongmi", "auto", True),
-    ("okhttp/4.12", "ios", "fm", False),
-    ("okhttp/4.12", "web", "fm", False),
-    ("Mozilla/5.0 (iPhone)", "", "fm", False),
-    ("Mozilla/5.0 (Linux; Android)", "", "fm", False),
-    ("Infuse", "", "fm", False),
-    ("trim.media", "", "fm", False),
-    ("okhttp/4.12", "", "fm", True),
-    ("FongMi", "", "pure", False),
+@pytest.mark.parametrize("headers", [
+    {}, {"User-Agent": "okhttp/4.12"}, {"User-Agent": "Dalvik Android"},
+    {"User-Agent": "FongMi/4"}, {"X-Client": "tvbox"},
+    {"X-Client": "ios"}, {"X-Client": "web"}, {"X-Client": "fnmedia"},
+    {"User-Agent": "Mozilla/5.0 (iPhone)"}, {"User-Agent": "Infuse"},
+    {"User-Agent": "trim.media"}, {"User-Agent": "UnknownPlayer/1"},
 ])
-def test_probe_hints_are_not_capability_evidence(agent, client_name, mode, expected):
-    assert can_probe({"user-agent": agent, "x-client": client_name}, mode) is expected
-
-
-def test_unknown_and_non_android_clients_keep_original_subscription(client):
-    for headers in ({}, {"User-Agent": "okhttp/4.12"},
-                    {"User-Agent": "Mozilla/5.0 (iPhone)"}, {"X-CLIENT": "fnmedia"}):
-        response = client.get("/t4/config.json", headers=headers)
-        assert "spider" not in response.json()
-        assert all(site["type"] == 4 for site in response.json()["sites"])
-        assert "t4_client" not in response.text
-    branded = client.get("/t4/config.json", headers={"User-Agent": "FongMi"})
-    assert "spider" in branded.json()
-    pure = client.get("/t4/config.json?client=pure", headers={"User-Agent": "FongMi"})
+def test_default_offer_is_brand_independent_and_does_not_require_loading(client, headers):
+    response = client.get("/t4/config.json", headers=headers)
+    assert response.status_code == 200
+    config = response.json()
+    assert "spider" in config
+    assert config["sites"][-1]["api"] == "csp_T4Relay"
+    assert config["sites"][-1]["hide"] == 1
+    assert all(site["type"] == 4 for site in config["sites"][:-1])
+    assert response.headers["cache-control"] == "no-store"
+    assert "user-agent" not in response.headers.get("vary", "").lower()
+    api = config["sites"][0]["api"]
+    original = client.get(
+        str(httpx.URL(api).copy_merge_params({"play": "demo"})), headers=headers,
+    ).json()
+    assert original == {
+        "url": "https://cdn.example/film.mp4", "parse": 0, "jx": 0,
+        "header": {"User-Agent": "signed-agent", "Referer": "https://origin.example/"},
+    }
+    assert client.get("/t4/api/client-acceleration").json()["ready"] == 0
+    pure = client.get("/t4/config.json?client=pure", headers=headers)
     assert "spider" not in pure.json()
-    assert branded.headers["cache-control"] == "no-store"
-    assert "User-Agent" in branded.headers["vary"]
+    assert all(site["type"] == 4 for site in pure.json()["sites"])
+    assert "t4_client" not in pure.text
 
 
 def test_jar_download_does_not_enable_playback_and_bad_proofs_stay_plain(client):
@@ -108,6 +107,54 @@ def test_jar_download_does_not_enable_playback_and_bad_proofs_stay_plain(client)
     assert play(client, api).json() == original
     assert "t4_client" not in client.app.state.acceleration.summary()
     assert client.get("/t4/api/client-acceleration").json()["ready"] == 0
+
+
+def test_pending_component_does_not_create_media_relays_or_plans(client, monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("an unconfirmed component must not allocate a media relay")
+
+    monkeypatch.setattr(client.app.state.playback, "client_relay", unexpected)
+    config, properties = offer(client)
+    assert play(client, config["sites"][0]["api"]).json() == (
+        client.get("/t4/fm/env-at/bili/?play=demo").json()
+    )
+    assert not client.app.state.acceleration.get(properties["session"]).plans
+
+
+@pytest.mark.parametrize("mode", ["pending", "ready"])
+def test_expired_component_cannot_confirm_and_playback_returns_original(client, monkeypatch, mode):
+    acceleration = client.app.state.acceleration
+    now = [0.0]
+    monkeypatch.setattr(acceleration, "clock", lambda: now[0])
+    config, properties = offer(client)
+    api = config["sites"][0]["api"]
+    original = play(client, api).json()
+    if mode == "ready":
+        assert confirm(client, properties)
+        assert play(client, api).json()["url"].startswith("proxy://")
+    now[0] = (acceleration.ttl if mode == "ready" else acceleration.pending_ttl) + 1
+    assert not confirm(client, properties)
+    assert client.get(config["spider"]).status_code == 410
+    assert play(client, api).json() == original
+    assert acceleration.summary()["ready"] == 0
+
+
+def test_missing_component_returns_same_subscription_as_pure_t4(client, tmp_path):
+    pure = client.get("/t4/config.json?client=pure").json()
+    client.app.state.acceleration.jar = tmp_path / "missing.jar"
+    response = client.get("/t4/config.json", headers={"X-Client": "unknown"})
+    assert response.status_code == 200
+    assert response.json() == pure
+    assert client.get("/t4/api/client-acceleration").json()["available"] is False
+    assert play(client, pure["sites"][0]["api"]).json()["url"].startswith("https://")
+
+
+def test_empty_profile_does_not_offer_unused_component(client):
+    profile = client.post("/t4/api/profiles", json={
+        "name": "Empty", "mode": "whitelist", "whitelist": [],
+    }).json()["profile"]
+    assert client.get(profile["subscription_path"]).json() == {"sites": []}
+    assert client.get("/t4/api/client-acceleration").json()["pending"] == 0
 
 
 def test_ready_client_gets_isolated_plan_and_exact_object_relay(client):
@@ -132,11 +179,6 @@ def test_ready_client_gets_isolated_plan_and_exact_object_relay(client):
     assert play(client, second["sites"][0]["api"]).json()["url"].startswith("https:")
     assert client.get("/t4/fm/env-at/bili/?play=demo").json()["url"].startswith("https:")
     assert "signed-agent" not in enhanced["url"]
-    copied = client.get(
-        str(httpx.URL(first["sites"][0]["api"]).copy_merge_params({"play": "demo"})),
-        headers={"X-CLIENT": "ios"},
-    )
-    assert copied.json()["url"].startswith("https://")
     # Replacing the session in a plan URL cannot cross subscription sessions.
     assert client.get(query["plan"][0].replace(proof["session"], other["session"])).status_code == 410
 
@@ -154,7 +196,7 @@ def test_disable_reverts_to_plain_without_restarting_workers(client):
 
 def test_capabilities_are_profile_scoped_and_respect_changed_plugin_policy(client):
     profile = client.post("/t4/api/profiles", json={"name": "test"}).json()["profile"]
-    config, properties = offer(client, profile["subscription_path"] + "?client=fm")
+    config, properties = offer(client, profile["subscription_path"])
     assert confirm(client, properties)
     api = config["sites"][0]["api"]
     enhanced = play(client, api).json()
@@ -199,18 +241,22 @@ def test_packaged_dex_matches_current_sources_and_does_not_bundle_host_abi(clien
     ("GET", "fm"), ("JSON", "fm"), ("FORM", "fm"),
     ("GET", "module"), ("JSON", "module"), ("FORM", "module"),
 ])
-def test_both_t4_route_shapes_support_confirmed_client_and_all_transports(client, method, route):
-    config, proof = offer(client)
+@pytest.mark.parametrize("client_name", ["tvbox", "unknown", "ios", "web"])
+def test_both_t4_route_shapes_use_confirmed_capability_not_brand(
+    client, method, route, client_name,
+):
+    config, proof = offer(client, headers={"X-Client": client_name})
     assert confirm(client, proof)
     api = config["sites"][0]["api"] if route == "fm" else (
         "/t4/api/play?source=env-at&site=bili&t4_client=" + proof["session"]
     )
     if method == "GET":
-        response = play(client, api)
+        response = client.get(str(httpx.URL(api).copy_merge_params({"play": "demo"})),
+                              headers={"X-Client": client_name})
     elif method == "JSON":
-        response = client.post(api, json={"play": "demo"})
+        response = client.post(api, json={"play": "demo"}, headers={"X-Client": client_name})
     else:
-        response = client.post(api, data={"play": "demo"})
+        response = client.post(api, data={"play": "demo"}, headers={"X-Client": client_name})
     assert response.status_code == 200
     assert response.json()["url"].startswith("proxy://")
 
@@ -226,8 +272,8 @@ def test_native_jar_is_unchanged_and_helper_is_not_a_user_source(tmp_path):
     app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry((source(),)),
                      subscription_fetcher=native_fetcher, t4_adapter=MediaAdapter())
     with TestClient(app) as client:
-        ordinary = client.get("/t4/config.json").json()["sites"]
-        enhanced = client.get("/t4/config.json?client=fm").json()
+        ordinary = client.get("/t4/config.json?client=pure").json()["sites"]
+        enhanced = client.get("/t4/config.json").json()
         push = next(site for site in ordinary if site["type"] == 3)
         assert next(site for site in enhanced["sites"] if site["key"] == push["key"]) == push
         assert enhanced["sites"][-1]["api"] == "csp_T4Relay"

@@ -64,6 +64,10 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "window.prompt(" not in response.text
     assert "window.confirm(" not in response.text
     assert "黑名单" in response.text
+    assert "自动增强（默认）" in response.text
+    assert 'value="pure"' in response.text
+    assert 'value="fm"' not in response.text
+    assert "FM 探测" not in response.text
 
 
 def test_web_icons_are_served_locally() -> None:

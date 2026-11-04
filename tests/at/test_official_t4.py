@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -240,20 +241,22 @@ def test_client_contract_category_detail_play_and_action(tmp_path, transport, en
             site = config.json()["sites"][0]
             assert site["type"] == 4
             assert TOKEN not in config.text
-            assert site["api"].endswith("/t4/fm/at/csp_Media/")
+            assert urlsplit(site["api"]).path == "/t4/fm/at/csp_Media/"
+            assert "t4_client=" in site["api"]
             metadata = client.get("/t4/api/sources/at/subscription")
             assert TOKEN not in metadata.text
             assert metadata.json()["plugins"][0]["transport"] == "official_t4"
 
             def call(module, params):
-                path = f"/t4/fm/at/csp_Media/"
+                api = httpx.URL(site["api"])
+                path = str(api)
                 if entry == "fm_module":
-                    path += "api/" + module
+                    path = str(api.copy_with(path=api.path + "api/" + module))
                 elif entry == "module":
-                    path = "/t4/api/" + module
+                    path = str(api.copy_with(path="/t4/api/" + module))
                     params = {**params, "source": "at", "site": "csp_Media"}
                 if transport == "GET":
-                    return client.get(path, params=params)
+                    return client.get(str(httpx.URL(path).copy_merge_params(params)))
                 if transport == "JSON":
                     return client.post(path, json=params)
                 return client.post(path, data=params)
@@ -336,7 +339,11 @@ def test_official_refresh_rotates_endpoint_without_changing_public_site_key(tmp_
         revision = "second"
         client.get("/t4/api/sources/at/subscription?refresh=true")
         current = client.get("/t4/config.json").json()["sites"][0]
-        assert original == current
+        assert {key: value for key, value in original.items() if key != "api"} == {
+            key: value for key, value in current.items() if key != "api"
+        }
+        assert urlsplit(original["api"]).path == urlsplit(current["api"]).path
+        assert urlsplit(original["api"]).query != urlsplit(current["api"]).query
 
 
 @pytest.mark.parametrize("transport", ["GET", "JSON", "FORM"])
@@ -522,8 +529,11 @@ def test_official_and_atvp_plugins_keep_distinct_execution_owners(tmp_path):
             subscription_fetcher=fetcher, t4_adapter=adapter,
         )) as client:
             config = client.get("/t4/config.json").json()
-            assert len(config["sites"]) == 3
-            for site in config["sites"]:
+            exported = [site for site in config["sites"] if site["type"] == 4]
+            assert len(exported) == 3
+            assert len(config["sites"]) == 4
+            assert config["sites"][-1]["api"] == "csp_T4Relay"
+            for site in exported:
                 assert client.get(site["api"]).status_code == 200
             assert calls == [("raw", "raw_python", "home"), ("encrypted", "secspider", "home")]
     finally:

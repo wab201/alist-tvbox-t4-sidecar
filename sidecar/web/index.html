@@ -125,7 +125,7 @@
       <h2 id="subscription-heading">影视订阅</h2>
       <button id="copy-subscription" class="icon" title="复制影视订阅地址" aria-label="复制影视订阅地址" disabled><img src="/t4/assets/icons/copy.svg" alt=""></button>
     </div>
-    <label>客户端模式<select id="subscription-mode"><option value="auto">自动识别（未知客户端使用纯 T4）</option><option value="fm">FM 能力探测</option><option value="pure">纯 T4</option></select></label>
+    <label>交付模式<select id="subscription-mode"><option value="auto">自动增强（默认）</option><option value="pure">纯 T4</option></select></label>
     <div class="subscription-entry"><code id="subscription-url">正在读取</code></div>
     <span id="client-acceleration-state" class="badge"></span>
     <p id="local-address-warning" hidden>当前为本机地址，电视端不可访问。请通过 NAS 或电脑的局域网 IP 打开管理台。</p>
@@ -481,8 +481,8 @@
   $("#subscription-mode").onchange = updateSubscriptionMode;
   request("/t4/api/client-acceleration").then(value => {
     $("#client-acceleration-state").textContent = value.available
-      ? `FM 探测：已确认 ${value.ready} · 等待 ${value.pending}`
-      : "FM 加速组件未构建 · 纯 T4";
+      ? `增强组件：已就绪 ${value.ready} · 待确认 ${value.pending}`
+      : "增强组件不可用 · 纯 T4";
   }).catch(() => {});
   function profileVisible() {
     const query = $("#profile-filter").value.trim().toLocaleLowerCase();

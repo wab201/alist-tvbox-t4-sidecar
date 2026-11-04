@@ -1,5 +1,6 @@
 import base64
 import json
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -116,7 +117,8 @@ def test_remote_plugin_full_http_contract(tmp_path, transport, entry, monkeypatc
         site = client.get("/t4/config.json").json()["sites"][0]
         assert site["type"] == 4 and site["quickSearch"] == 0
         assert site["categories"] == ["movies"] and site["timeout"] == 45
-        assert site["api"].endswith("/t4/fm/at/plugin-42/")
+        assert urlsplit(site["api"]).path == "/t4/fm/at/plugin-42/"
+        assert "t4_client=" in site["api"]
         assert "ext" not in site and "jar" not in site
         metadata = client.get("/t4/api/sources/at/subscription")
         assert metadata.json()["errors"] == []
@@ -126,12 +128,13 @@ def test_remote_plugin_full_http_contract(tmp_path, transport, entry, monkeypatc
         def call(module, params):
             path = site["api"]
             if entry == "fm_module":
-                path += "api/" + module
+                api = httpx.URL(path)
+                path = str(api.copy_with(path=api.path + "api/" + module))
             elif entry == "module":
-                path = "/t4/api/" + module
+                path = str(httpx.URL(path).copy_with(path="/t4/api/" + module))
                 params = {**params, "source": "at", "site": "plugin-42"}
             if transport == "GET":
-                return client.get(path, params=params)
+                return client.get(str(httpx.URL(path).copy_merge_params(params)))
             if transport == "JSON":
                 return client.post(path, json=params)
             return client.post(path, data=params)
@@ -232,7 +235,11 @@ def test_remote_refresh_uses_rotated_endpoint_but_keeps_site_and_play_context(tm
         metadata = client.get("/t4/api/sources/at/subscription?refresh=true")
         assert metadata.json()["errors"] == []
         current = client.get("/t4/config.json").json()["sites"][0]
-        assert current == original
+        assert {key: value for key, value in current.items() if key != "api"} == {
+            key: value for key, value in original.items() if key != "api"
+        }
+        assert urlsplit(current["api"]).path == urlsplit(original["api"]).path
+        assert urlsplit(current["api"]).query != urlsplit(original["api"]).query
         assert client.get(current["api"], params={"play": play_id}).status_code == 200
     assert seen == ["/t4/first/v/plugin-42", "/t4/second/v/plugin-42"]
 
@@ -329,7 +336,10 @@ def test_remote_raw_encrypted_and_builtin_sources_keep_distinct_owners(tmp_path)
         with TestClient(create_app(
             Settings(plugin_dir=str(tmp_path)), registry, fetch, t4_adapter=adapter,
         )) as client:
-            exported = client.get("/t4/config.json").json()["sites"]
+            config = client.get("/t4/config.json").json()
+            exported = [site for site in config["sites"] if site["type"] == 4]
+            assert len(config["sites"]) == 5
+            assert config["sites"][-1]["api"] == "csp_T4Relay"
             assert len(exported) == 4
             for site in exported:
                 assert client.get(site["api"]).status_code == 200

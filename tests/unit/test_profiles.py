@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -50,7 +51,12 @@ def test_profile_exports_are_independent_and_enforce_plugin_policy(tmp_path):
         )
         assert config.status_code == 200
         assert config.headers["access-control-allow-origin"] == "*"
-        sites = config.json()["sites"]
+        exported = config.json()
+        sites = [site for site in exported["sites"] if site["type"] == 4]
+        assert len(exported["sites"]) == 2
+        assert exported["sites"][-1]["api"] == "csp_T4Relay"
+        assert "/t4/acceleration/" in exported["spider"]
+        assert exported["sites"][-1]["jar"] == exported["spider"]
         assert [site["key"] for site in sites] == [bili["key"]]
         assert all(site["api"].startswith(f"http://nas.test:8765/t4/profiles/{profile_id}/fm/") for site in sites)
         assert client.get("/t4/config.json").json()["sites"][0]["key"] == bili["key"]
@@ -91,7 +97,8 @@ def test_blacklist_and_disabled_profile_are_isolated(tmp_path):
             "name": "移动端", "mode": "blacklist", "blacklist": [raw_key],
         }).json()["profile"]
         profile_id = created["id"]
-        sites = client.get(created["subscription_path"]).json()["sites"]
+        sites = [site for site in client.get(created["subscription_path"]).json()["sites"]
+                 if site["type"] == 4]
         assert raw_key not in {item["key"] for item in sites}
         assert len(sites) == 1
 
@@ -154,7 +161,8 @@ def test_default_policy_cannot_be_replaced_by_query_or_body(tmp_path):
         assert client.get("/t4/config.json", params={
             "profile_id": other["id"],
         }).json()["sites"][0]["name"] == "BiliBili"
-        assert len(client.get(other["subscription_path"]).json()["sites"]) == 2
+        assert len([site for site in client.get(other["subscription_path"]).json()["sites"]
+                    if site["type"] == 4]) == 2
         assert not adapter.requests
 
 
@@ -191,12 +199,14 @@ def test_same_names_and_plugin_ids_in_different_sources_stay_independent(tmp_pat
             "name": "One", "mode": "whitelist",
             "whitelist": [build_site_key("one", "bili")],
         }).json()["profile"]
-        sites = client.get(profile["subscription_path"]).json()["sites"]
+        sites = [site for site in client.get(profile["subscription_path"]).json()["sites"]
+                 if site["type"] == 4]
         assert len(sites) == 1 and "/one/bili/" in sites[0]["api"]
         assert len(client.get("/t4/api/profiles/default/plugins").json()["plugins"]) == 2
         assert client.delete(f"/t4/api/profiles/{profile['id']}").status_code == 200
         assert client.get(profile["subscription_path"]).status_code == 404
-        assert len(client.get("/t4/config.json").json()["sites"]) == 2
+        assert len([site for site in client.get("/t4/config.json").json()["sites"]
+                    if site["type"] == 4]) == 2
 
 
 def test_navigation_filters_delegates_and_separates_profile_sessions(tmp_path):
@@ -273,11 +283,15 @@ def test_profile_full_chain_uses_actual_uploaded_runtime(tmp_path, language, con
         site = client.get(profile["subscription_path"]).json()["sites"][0]
 
         def call(params):
-            options = {"params": params} if transport == "GET" else {
+            url = (
+                str(httpx.URL(site["api"]).copy_merge_params(params))
+                if transport == "GET" else site["api"]
+            )
+            options = {} if transport == "GET" else {
                 "json" if transport == "JSON" else "data": params,
             }
             response = client.request("GET" if transport == "GET" else "POST",
-                                      site["api"], **options)
+                                      url, **options)
             assert response.status_code == 200, response.text
             return response.json()
 

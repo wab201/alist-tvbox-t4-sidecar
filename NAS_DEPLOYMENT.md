@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.13
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.14
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,14 +45,14 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用镜像标签为 `0.3.13`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.14`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.13`。
-更新到 `0.3.13` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.14`。
+更新到 `0.3.14` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
 对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
 使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
 
@@ -275,7 +275,7 @@ HTTPS 由其他代理终止时，该代理需传递实际外部协议；不要�
 镜像默认启用 Uvicorn 代理头处理，Compose 设置 `FORWARDED_ALLOW_IPS=*`。
 同时保留 GET/POST 请求体和 `Range`、`If-Range`，不要遗漏 `/t4/media/`、`/t4/proxy/`
 或 `/t4/images/`。
-使用 FM 能力探测时还要完整转发 `/t4/acceleration/`，保留 POST 正文与 HEAD，
+默认订阅包含可选增强组件，还要完整转发 `/t4/acceleration/`，保留 POST 正文与 HEAD，
 不要强制缓存能力探测 JAR 或带会话的订阅响应。
 若 AT 自身也使用 `/t4/`，不要将同域整段路径同时分配给两个后端，改用独立域名。
 

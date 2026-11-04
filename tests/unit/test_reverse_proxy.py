@@ -1,5 +1,6 @@
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from uvicorn import Config
@@ -61,10 +62,17 @@ def test_proxy_subscription_preserves_external_origin(
     ) as client:
         response = client.get("/t4/config.json")
         assert response.status_code == 200
-        api = response.json()["sites"][0]["api"]
-        assert api == expected_origin + "/t4/fm/at/media/"
-        path = urlsplit(api).path
-        assert client.get(path, params={"filter": "true"}).status_code == 200
+        config = response.json()
+        api = config["sites"][0]["api"]
+        parsed = urlsplit(api)
+        assert parsed._replace(query="").geturl() == expected_origin + "/t4/fm/at/media/"
+        session = parse_qs(parsed.query)["t4_client"][0]
+        assert config["spider"] == expected_origin + f"/t4/acceleration/{session}/client.jar"
+        assert client.get(urlsplit(config["spider"]).path).status_code == 200
+        path = parsed._replace(scheme="", netloc="").geturl()
+        assert client.get(str(httpx.URL(path).copy_merge_params(
+            {"filter": "true"}
+        ))).status_code == 200
         assert client.post(path, json={"ac": "list", "t": "all"}).status_code == 200
         assert client.post(path, data={"wd": "test"}).status_code == 200
         assert [call.module for call in adapter.requests] == [

@@ -20,24 +20,6 @@ PROTOCOL = 1
 JAR_VERSION = "1"
 
 
-def can_probe(headers: Any, mode: str = "auto") -> bool:
-    """A client hint permits a probe, not accelerated playback."""
-    if mode == "pure":
-        return False
-    agent = str(headers.get("user-agent", "")).lower()
-    client = str(headers.get("x-client", "")).lower()
-    if client in {"web", "browser", "html5"}:
-        return False
-    if any(name in agent + " " + client for name in (
-        "iphone", "ipad", "ios", "trim.media", "fnmedia", "infuse",
-    )):
-        return False
-    named = client in {"fm", "fongmi", "com.fongmi.android.tv"} or "fongmi" in agent
-    if "mozilla/" in agent and not named:
-        return False
-    return named or mode == "fm"
-
-
 @dataclass
 class ClientSession:
     id: str

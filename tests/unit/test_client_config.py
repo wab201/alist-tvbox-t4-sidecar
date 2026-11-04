@@ -1,5 +1,6 @@
 import base64
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -60,7 +61,11 @@ def test_config_is_importable_and_does_not_expose_at_material(tmp_path):
         response = client.get("/t4/config.json")
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        sites = response.json()["sites"]
+        config = response.json()
+        sites = [site for site in config["sites"] if site["type"] == 4]
+        assert len(config["sites"]) == len(sites) + 1
+        assert config["sites"][-1]["api"] == "csp_T4Relay"
+        assert config["sites"][-1]["jar"] == config["spider"]
         assert adapter.requests == []
         assert len(sites) == 4
         assert len({site["key"] for site in sites}) == 4
@@ -70,7 +75,9 @@ def test_config_is_importable_and_does_not_expose_at_material(tmp_path):
         assert all(site["type"] == 4 for site in sites)
         for site in sites:
             assert site["api"].startswith("http://nas.test:8765/t4/fm/")
-            assert client.get(site["api"], params={"filter": "true"}).status_code == 200
+            assert client.get(str(httpx.URL(site["api"]).copy_merge_params(
+                {"filter": "true"}
+            ))).status_code == 200
         assert "private" not in response.text
         assert "Authorization" not in response.text
         assert "ext" not in sites[0]
@@ -101,7 +108,11 @@ def test_unified_subscription_exports_every_runtime_without_sample_whitelist(tmp
     )
     with TestClient(app) as client:
         response = client.get("/t4/config.json")
-        sites = response.json()["sites"]
+        config = response.json()
+        sites = [site for site in config["sites"] if site["type"] == 4]
+        assert len(config["sites"]) == count + 1
+        assert config["sites"][-1]["hide"] == 1
+        assert config["sites"][-1]["api"] == "csp_T4Relay"
         assert len(sites) == count
         assert len({site["key"] for site in sites}) == count
         assert [site["name"] for site in sites] == [f"Plugin {i}" for i in range(count)]
@@ -127,8 +138,14 @@ def test_subscription_has_fixed_address_and_no_signed_routes(tmp_path, monkeypat
         assert "obsolete-gateway" not in response.text
         assert "private" not in response.text
         site = response.json()["sites"][0]
-        assert site["api"] == "http://testserver/t4/fm/env-at/bili/"
+        api = urlsplit(site["api"])
+        assert api._replace(query="").geturl() == "http://testserver/t4/fm/env-at/bili/"
+        assert set(parse_qs(api.query)) == {"t4_client"}
         assert client.get(site["api"]).status_code == 200
+        assert client.get(api.path).status_code == 200
+        assert client.get("/t4/config.json?client=pure").json()["sites"][0]["api"] == (
+            api._replace(query="").geturl()
+        )
         assert client.get("/t4/config/obsolete-key.json").status_code == 404
         assert client.get("/t4/fm/env-at/bili/obsolete-key/").status_code == 404
 
@@ -165,7 +182,7 @@ def test_import_then_full_client_parameter_chain(tmp_path, language, content, tr
 
         def call(params):
             if transport == "GET":
-                response = client.get(api, params=params)
+                response = client.get(str(httpx.URL(api).copy_merge_params(params)))
             elif transport == "JSON":
                 response = client.post(api, json=params)
             else:
@@ -201,16 +218,20 @@ def test_config_tracks_management_and_stable_keys(tmp_path):
         second = client.post(
             "/t4/api/plugins/upload", files={"file": ("two.py", PYTHON_PLUGIN + b"\n")}
         ).json()["plugin"]
-        before = client.get("/t4/config.json").json()["sites"]
+        before = [site for site in client.get("/t4/config.json").json()["sites"]
+                  if site["type"] == 4]
         assert len(before) == 2
         client.patch(f"/t4/api/plugins/{first['id']}", json={"name": "Renamed"})
         client.post("/t4/api/plugins/reorder", json={"plugin_ids": [second["id"], first["id"]]})
-        after = client.get("/t4/config.json").json()["sites"]
+        after = [site for site in client.get("/t4/config.json").json()["sites"]
+                 if site["type"] == 4]
         assert after[1]["name"] == "Renamed"
         assert after[1]["key"] == before[0]["key"]
-        assert after[1]["api"] == before[0]["api"]
+        assert urlsplit(after[1]["api"]).path == urlsplit(before[0]["api"]).path
+        assert urlsplit(after[1]["api"]).query != urlsplit(before[0]["api"]).query
         client.delete(f"/t4/api/plugins/{first['id']}")
-        remaining = client.get("/t4/config.json").json()["sites"]
+        remaining = [site for site in client.get("/t4/config.json").json()["sites"]
+                     if site["type"] == 4]
         assert len(remaining) == 1
         assert remaining[0]["key"] == before[1]["key"]
 
