@@ -21,8 +21,11 @@ def build(sdk: Path, java_home: Path | None, output: Path) -> str:
     javac = str(java_home / "bin" / ("javac" + suffix)) if java_home else shutil.which("javac")
     if not java or not javac:
         raise RuntimeError("JDK is required; set JAVA_HOME")
-    platforms = sorted(sdk.glob("platforms/android-*/android.jar"),
-                       key=lambda path: int(path.parent.name.split("-")[-1]))
+    platforms = sorted(
+        (path for path in sdk.glob("platforms/android-*/android.jar")
+         if path.parent.name.removeprefix("android-").isdigit()),
+        key=lambda path: int(path.parent.name.removeprefix("android-")),
+    )
     compilers = sorted(sdk.glob("build-tools/*/lib/d8.jar"))
     if not platforms or not compilers:
         raise RuntimeError("Android SDK platform and build-tools are required")
