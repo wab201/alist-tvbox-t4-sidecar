@@ -55,6 +55,12 @@ def test_t4_web_entry_is_available_without_at_frontend_changes() -> None:
     assert "navigation-all" in response.text
     assert 'data-select="none"' in response.text
     assert 'aria-label="筛选搜源插件"' in response.text
+    assert 'id="profile-select"' in response.text
+    assert 'id="profile-dialog"' in response.text
+    assert "/t4/api/profiles" in response.text
+    assert "window.prompt(" not in response.text
+    assert "window.confirm(" not in response.text
+    assert "黑名单" in response.text
 
 
 def test_web_icons_are_served_locally() -> None:

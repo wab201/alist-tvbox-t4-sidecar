@@ -40,6 +40,9 @@ from sidecar.plugin_proxy import PluginProxyRegistry
 from sidecar.resources import IdleMemory, ResourceActivityMiddleware, resource_snapshot
 from sidecar.images import ImageBridge
 from sidecar.gateway.routes.images import build_images_router
+from sidecar.gateway.profiles import T4ProfileStore
+from sidecar.gateway.routes.profiles import build_profiles_router
+from sidecar.gateway.client_cors import ClientCORSMiddleware
 
 
 def create_app(
@@ -91,6 +94,7 @@ def create_app(
     navigation_settings = NavigationSettingsStore(
         Path(runtime_settings.plugin_dir) / "navigation.json",
     )
+    profiles = T4ProfileStore(Path(runtime_settings.plugin_dir) / "profiles.json")
     subscription_resolver = CachedSubscriptionResolver(
         subscription_fetcher,
         ttl=runtime_settings.subscription_cache_ttl,
@@ -241,6 +245,7 @@ def create_app(
     app.include_router(build_images_router(images))
     app.add_middleware(TraceMiddleware, store=trace_store)
     app.add_middleware(ResourceActivityMiddleware, memory=memory)
+    app.add_middleware(ClientCORSMiddleware)
     app.include_router(build_diagnostics_router(
         trace_store, playback, runtime_adapter, resources=resources,
     ))
@@ -252,11 +257,13 @@ def create_app(
     app.include_router(build_sources_router(
         runtime_sources, playback_settings, navigation_settings, navigation_snapshot,
     ))
+    app.include_router(build_profiles_router(profiles, runtime_sources, navigation_snapshot))
     app.include_router(
         build_client_config_router(
             runtime_sources,
             subscription_resolver=subscription_resolver.resolve,
             local_snapshot_provider=upload_store.snapshot_for,
+            profiles=profiles,
         )
     )
     app.include_router(
@@ -271,9 +278,9 @@ def create_app(
     app.include_router(
         build_uploads_router(runtime_settings, runtime_sources, upload_store, runtime_adapter)
     )
-    app.include_router(build_t4_router(runtime_sources, runtime_adapter, playback))
+    app.include_router(build_t4_router(runtime_sources, runtime_adapter, playback, profiles))
     app.include_router(
-        build_fm_router(runtime_sources, runtime_adapter, playback)
+        build_fm_router(runtime_sources, runtime_adapter, playback, profiles)
     )
     app.include_router(build_web_router())
     app.mount(

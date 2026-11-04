@@ -9,6 +9,8 @@ from sidecar.at.native import NativeAtError, NativeAtUnsupportedError
 from sidecar.at.subscription import SubscriptionParseError
 from sidecar.gateway.fm import translate_fm_request
 from sidecar.gateway.source_registry import SourceRegistry
+from sidecar.gateway.profiles import PluginPolicyDenied, T4ProfileStore
+from sidecar.gateway.routes.profiles import require_profile
 from sidecar.t4.adapter import T4Adapter, T4Request
 from sidecar.playback import PlaybackBridge, PlaybackError
 from sidecar.worker.client import WorkerRemoteError, WorkerTimeoutError
@@ -18,9 +20,18 @@ def build_fm_router(
     source_registry: SourceRegistry,
     adapter: T4Adapter,
     playback: PlaybackBridge | None = None,
+    profiles: T4ProfileStore | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
+    @router.api_route(
+        "/t4/profiles/{profile_id}/fm/{source_id}/{plugin_id}/api/{module}",
+        methods=["GET", "POST"],
+    )
+    @router.api_route(
+        "/t4/profiles/{profile_id}/fm/{source_id}/{plugin_id}/",
+        methods=["GET", "POST"],
+    )
     @router.api_route(
         "/t4/fm/{source_id}/{plugin_id}/api/{module}",
         methods=["GET", "POST"],
@@ -34,6 +45,12 @@ def build_fm_router(
         plugin_id: str,
         request: Request,
     ) -> dict[str, Any]:
+        profile_id = request.path_params.get("profile_id", "default")
+        profile = require_profile(profiles, profile_id) if profiles is not None else None
+        if profile is not None and not profile.allows(source_id, plugin_id):
+            raise HTTPException(403, detail={
+                "code": "plugin_disabled", "message": "插件已在此 T4 出口禁用",
+            })
         if source_registry.get(source_id) is None:
             raise HTTPException(
                 status_code=404,
@@ -72,11 +89,16 @@ def build_fm_router(
                     plugin_id=plugin_id,
                     params=params,
                     proxy_base=str(request.base_url),
+                    profile=profile,
                 )
             )
             if module == "play" and playback is not None:
                 result = await asyncio.to_thread(playback.prepare, result, str(request.base_url))
             return result
+        except PluginPolicyDenied as exc:
+            raise HTTPException(403, detail={
+                "code": "plugin_disabled", "message": str(exc),
+            }) from exc
         except PlaybackError as exc:
             raise HTTPException(status_code=502, detail={
                 "code": exc.code, "message": "服务端尚未取得可直接播放的媒体，请查看链路日志",

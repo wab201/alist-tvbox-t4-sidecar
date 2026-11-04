@@ -18,10 +18,12 @@ def build_site_key(source_id: str, plugin_id: str) -> str:
 def build_fm_path(
     source_id: str,
     plugin_id: str,
+    profile_id: str = "default",
 ) -> str:
     source_part = f"{quote(source_id, safe='')}/"
     plugin_part = f"{quote(plugin_id, safe='')}/"
-    return f"/t4/fm/{source_part}{plugin_part}"
+    prefix = "/t4" if profile_id == "default" else f"/t4/profiles/{quote(profile_id, safe='')}"
+    return f"{prefix}/fm/{source_part}{plugin_part}"
 
 
 def translate_fm_request(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:

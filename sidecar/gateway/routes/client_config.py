@@ -11,6 +11,8 @@ from sidecar.gateway.fm import (
     build_site_key,
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
+from sidecar.gateway.profiles import T4ProfileStore
+from sidecar.gateway.routes.profiles import require_profile
 
 
 def build_client_config_router(
@@ -18,6 +20,7 @@ def build_client_config_router(
     *,
     subscription_resolver: Any,
     local_snapshot_provider: Any,
+    profiles: T4ProfileStore,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -25,7 +28,9 @@ def build_client_config_router(
     async def client_config_link() -> dict[str, str]:
         return {"subscription_path": "/t4/config.json"}
 
-    async def sites_for(source: SourceConfig, base_url: str) -> list[dict[str, Any]]:
+    async def sites_for(source: SourceConfig, base_url: str, profile) -> list[dict[str, Any]]:
+        if profile.mode == "whitelist" and not profile.whitelist:
+            return []
         snapshot = local_snapshot_provider(source.source_id)
         if snapshot is None:
             try:
@@ -41,6 +46,8 @@ def build_client_config_router(
         sites = []
         seen = set()
         for plugin in snapshot.plugins:
+            if not profile.allows(source.source_id, plugin.plugin_id):
+                continue
             if plugin.native_client_site:
                 sites.append(dict(plugin.native_client_site))
                 continue
@@ -64,19 +71,22 @@ def build_client_config_router(
                 "name": plugin.name,
                 "type": 4,
                 "api": base_url + build_fm_path(
-                    source.source_id, plugin.plugin_id
+                    source.source_id, plugin.plugin_id, profile.id
                 ),
             })
         return sites
 
     @router.get("/t4/config.json")
+    @router.get("/t4/profiles/{profile_id}/config.json")
     async def client_config(
         request: Request,
         response: Response,
     ) -> dict[str, Any]:
+        profile_id = request.path_params.get("profile_id", "default")
+        profile = require_profile(profiles, profile_id)
         response.headers["Cache-Control"] = "no-store"
         groups = await asyncio.gather(*(
-            sites_for(source, str(request.base_url).rstrip("/"))
+            sites_for(source, str(request.base_url).rstrip("/"), profile)
             for source in source_registry.all()
         ))
         sites = []

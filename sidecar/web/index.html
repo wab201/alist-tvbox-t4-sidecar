@@ -83,6 +83,15 @@
     .subscription-entry { display: flex; align-items: center; gap: 12px; }
     .subscription-entry code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
     #local-address-warning { color: var(--danger); margin-top: 10px; }
+    .profile-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: end; margin: 14px 0; }
+    .profile-list { margin-top: 12px; max-height: 360px; overflow: auto; border: 1px solid var(--line); }
+    .profile-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 54px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel); }
+    .profile-row:first-child { border-top: 0; }
+    .profile-row input { width: 16px; min-height: 16px; }
+    .profile-row span { overflow-wrap: anywhere; }
+    .profile-row small { display: block; font-size: 11px; }
+    .profile-row .badge { white-space: nowrap; }
+    #profile-errors { color: var(--danger); white-space: pre-line; overflow-wrap: anywhere; }
     dialog { border: 1px solid var(--line); border-radius: 6px; padding: 24px; width: 420px; max-width: calc(100% - 32px); }
     dialog::backdrop { background: #18212b66; }
     dialog h2 { margin-bottom: 14px; } dialog p { margin-bottom: 16px; overflow-wrap: anywhere; }
@@ -100,6 +109,7 @@
       .section-head { flex-wrap: wrap; }
       .gate-controls { grid-template-columns: minmax(0, 1fr) 80px; }
       .gate-controls > label:first-child, .gate-controls > label:nth-child(2) { grid-column: 1 / -1; }
+      .profile-fields { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -117,6 +127,39 @@
     </div>
     <div class="subscription-entry"><code id="subscription-url">正在读取</code></div>
     <p id="local-address-warning" hidden>当前为本机地址，电视端不可访问。请通过 NAS 或电脑的局域网 IP 打开管理台。</p>
+  </section>
+  <section aria-labelledby="profiles-heading">
+    <div class="section-head">
+      <h2 id="profiles-heading">独立 T4 出口</h2>
+      <div class="row-actions">
+        <button id="profile-new">新增出口</button>
+        <button id="profile-reload" class="icon" title="刷新出口和插件列表" aria-label="刷新出口和插件列表"><img src="/t4/assets/icons/refresh-cw.svg" alt=""></button>
+        <button id="profile-delete" class="icon danger" title="删除出口" aria-label="删除出口" disabled><img src="/t4/assets/icons/trash-2.svg" alt=""></button>
+      </div>
+    </div>
+    <label>当前出口<select id="profile-select" disabled></select></label>
+    <form id="profile-form" aria-busy="false">
+      <div class="profile-fields">
+        <label>出口名称<input id="profile-name" maxlength="80" required autocomplete="off"></label>
+        <label>插件范围<select id="profile-mode"><option value="all">全部插件（允许单独禁用）</option><option value="whitelist">白名单</option><option value="blacklist">黑名单</option></select></label>
+        <label class="check-label"><input id="profile-enabled" type="checkbox" checked>启用出口</label>
+      </div>
+      <div class="subscription-entry">
+        <code id="profile-url"></code>
+        <button id="profile-copy" type="button" class="icon" title="复制独立订阅地址" aria-label="复制独立订阅地址" disabled><img src="/t4/assets/icons/copy.svg" alt=""></button>
+      </div>
+      <div class="toolbar" style="margin-top:14px;flex-wrap:wrap">
+        <input id="profile-filter" type="search" placeholder="插件名、来源或 ID" aria-label="筛选出口插件" style="width:260px;max-width:100%">
+        <span id="profile-count" class="badge"></span>
+        <div class="row-actions">
+          <button id="profile-all" type="button">全选当前结果</button>
+          <button id="profile-none" type="button">清空当前结果</button>
+          <button id="profile-save" type="submit" class="primary"><img src="/t4/assets/icons/save.svg" alt="">保存出口</button>
+        </div>
+      </div>
+      <div id="profile-plugins" class="profile-list" aria-busy="false"></div>
+      <p id="profile-errors" role="alert"></p>
+    </form>
   </section>
   <section aria-labelledby="upload-heading">
     <div class="section-head"><h2 id="upload-heading">上传本地插件</h2><span class="badge">Python / JavaScript</span></div>
@@ -192,6 +235,17 @@
     </div>
   </form>
 </dialog>
+<dialog id="profile-dialog" aria-labelledby="profile-dialog-title">
+  <form id="profile-dialog-form">
+    <h2 id="profile-dialog-title"></h2>
+    <p id="profile-dialog-message"></p>
+    <label id="profile-dialog-label">新出口名称<input id="profile-dialog-name" maxlength="80" autocomplete="off" required></label>
+    <div class="dialog-actions">
+      <button id="profile-dialog-cancel" type="button">取消</button>
+      <button id="profile-dialog-submit" class="primary" type="submit">确定</button>
+    </div>
+  </form>
+</dialog>
 <script>
   const $ = (selector) => document.querySelector(selector);
   const pluginsNode = $("#plugins");
@@ -201,6 +255,15 @@
   let busy = false;
   let dialogOperation = null;
   let subscriptionUrl = "";
+  let profiles = [];
+  let activeProfile = null;
+  let profilePlugins = [];
+  let profileWhite = new Set();
+  let profileBlack = new Set();
+  let profileDirty = false;
+  let profileGeneration = 0;
+  let profileSaving = false;
+  let profileDialogResolve = null;
   const selectedSites = new Map();
   const diagnosticSources = new Map();
   const gateNames = {pass: "通过", fail: "失败", blocked: "受阻", unsupported: "不适用", not_tested: "未测试"};
@@ -381,7 +444,7 @@
   async function request(path, options = {}) {
     const response = await fetch(path, options);
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload?.detail?.message || (response.status === 422 ? "提交的数据格式不正确" : `HTTP ${response.status}`));
+    if (!response.ok) throw new Error(payload?.detail?.message || (typeof payload.detail === "string" ? payload.detail : response.status === 422 ? "提交的数据格式不正确" : `HTTP ${response.status}`));
     return payload;
   }
   function jsonOptions(method, data) {
@@ -398,6 +461,200 @@
   $("#copy-subscription").onclick = () => copyText(subscriptionUrl)
     .then(() => setStatus("影视订阅地址已复制", "ok"))
     .catch(error => setStatus(error.message, "error"));
+  function profileVisible() {
+    const query = $("#profile-filter").value.trim().toLocaleLowerCase();
+    return profilePlugins.filter(p => !query || `${p.name} ${p.source_name} ${p.plugin_id}`.toLocaleLowerCase().includes(query));
+  }
+  function profileIncluded(plugin) {
+    return !profileBlack.has(plugin.key) && ($("#profile-mode").value !== "whitelist" || profileWhite.has(plugin.key));
+  }
+  function profileChecked(plugin) {
+    return $("#profile-mode").value === "blacklist" ? profileBlack.has(plugin.key) : profileIncluded(plugin);
+  }
+  function setProfilePlugin(plugin, checked) {
+    const mode = $("#profile-mode").value;
+    if (mode === "blacklist") {
+      if (checked) profileBlack.add(plugin.key); else profileBlack.delete(plugin.key);
+    } else if (checked) {
+      profileBlack.delete(plugin.key);
+      if (mode === "whitelist") profileWhite.add(plugin.key);
+    } else if (mode === "whitelist") {
+      profileWhite.delete(plugin.key);
+    } else {
+      profileBlack.add(plugin.key);
+    }
+    profileDirty = true;
+  }
+  function renderProfilePlugins() {
+    const node = $("#profile-plugins");
+    node.replaceChildren();
+    const mode = $("#profile-mode").value;
+    for (const plugin of profileVisible()) {
+      const row = document.createElement("label");
+      row.className = "profile-row";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = profileChecked(plugin);
+      checkbox.disabled = !plugin.supported || profileSaving;
+      checkbox.setAttribute("aria-label", `${mode === "blacklist" ? "屏蔽" : "启用"} ${plugin.name} · ${plugin.source_name}`);
+      checkbox.onchange = () => { setProfilePlugin(plugin, checkbox.checked); renderProfilePlugins(); };
+      const title = document.createElement("span");
+      title.textContent = plugin.name;
+      const source = document.createElement("small");
+      source.className = "muted";
+      source.textContent = `${plugin.source_name} · ${plugin.plugin_id}`;
+      title.append(source);
+      const state = document.createElement("span");
+      state.className = "badge";
+      state.textContent = !plugin.supported ? "非 T4" : !$("#profile-enabled").checked ? "出口停用"
+        : profileIncluded(plugin) ? "已启用" : "已禁用";
+      row.append(checkbox, title, state);
+      node.append(row);
+    }
+    if (!node.childElementCount) {
+      const empty = document.createElement("div");
+      empty.className = "empty"; empty.textContent = "暂无匹配插件"; node.append(empty);
+    }
+    const supported = profilePlugins.filter(p => p.supported);
+    $("#profile-count").textContent = `已启用 ${$("#profile-enabled").checked ? supported.filter(profileIncluded).length : 0} / ${supported.length}`
+      + (mode === "blacklist" ? " · 勾选为屏蔽" : " · 勾选为启用");
+    $("#profile-copy").disabled = !activeProfile || !$("#profile-enabled").checked || profileSaving;
+  }
+  function askProfile(title, message, name = null, destructive = false) {
+    $("#profile-dialog-title").textContent = title;
+    $("#profile-dialog-message").textContent = message;
+    $("#profile-dialog-label").hidden = name === null;
+    $("#profile-dialog-name").disabled = name === null;
+    $("#profile-dialog-name").value = name || "";
+    $("#profile-dialog-submit").className = destructive ? "danger" : "primary";
+    $("#profile-dialog-submit").textContent = name === null ? "确定" : "创建";
+    const answer = new Promise(resolve => { profileDialogResolve = resolve; });
+    $("#profile-dialog").showModal();
+    if (name === null) $("#profile-dialog-cancel").focus();
+    else $("#profile-dialog-name").select();
+    return answer;
+  }
+  function closeProfileDialog(value = null) {
+    const resolve = profileDialogResolve;
+    profileDialogResolve = null;
+    $("#profile-dialog").close();
+    resolve?.(value);
+  }
+  $("#profile-dialog-cancel").onclick = () => closeProfileDialog();
+  $("#profile-dialog").oncancel = event => {
+    event.preventDefault();
+    closeProfileDialog();
+  };
+  $("#profile-dialog-form").onsubmit = event => {
+    event.preventDefault();
+    const name = $("#profile-dialog-name");
+    if (!name.disabled && !name.value.trim()) { name.focus(); return; }
+    closeProfileDialog(name.disabled ? true : name.value.trim());
+  };
+  async function discardProfileChanges() {
+    return !profileDirty || await askProfile("放弃未保存设置", "是否放弃当前出口未保存的修改？");
+  }
+  async function selectProfile(identifier, force = false) {
+    if (!force && !await discardProfileChanges()) {
+      $("#profile-select").value = activeProfile.id; return;
+    }
+    const generation = ++profileGeneration;
+    activeProfile = profiles.find(p => p.id === identifier);
+    if (!activeProfile) return;
+    $("#profile-select").value = identifier;
+    $("#profile-name").value = activeProfile.name;
+    $("#profile-mode").value = activeProfile.mode;
+    $("#profile-enabled").checked = activeProfile.enabled;
+    profileWhite = new Set(activeProfile.whitelist);
+    profileBlack = new Set(activeProfile.blacklist);
+    profileDirty = false;
+    $("#profile-url").textContent = new URL(activeProfile.subscription_path, location.origin).href;
+    $("#profile-delete").disabled = identifier === "default";
+    $("#profile-filter").value = "";
+    profilePlugins = [];
+    $("#profile-plugins").setAttribute("aria-busy", "true");
+    $("#profile-errors").textContent = "";
+    renderProfilePlugins();
+    try {
+      const payload = await request(`/t4/api/profiles/${encodeURIComponent(identifier)}/plugins`);
+      if (generation !== profileGeneration) return;
+      profilePlugins = payload.plugins;
+      $("#profile-errors").textContent = payload.errors.map(e => `${e.source_id}：${e.message}`).join("\n");
+      renderProfilePlugins();
+    } catch (error) {
+      if (generation === profileGeneration) $("#profile-errors").textContent = error.message;
+    } finally {
+      if (generation === profileGeneration) $("#profile-plugins").setAttribute("aria-busy", "false");
+    }
+  }
+  async function loadProfiles(identifier = activeProfile?.id || "default") {
+    profiles = (await request("/t4/api/profiles")).profiles;
+    $("#profile-select").replaceChildren(...profiles.map(p => new Option(p.name + (p.enabled ? "" : "（停用）"), p.id)));
+    $("#profile-select").disabled = false;
+    await selectProfile(profiles.some(p => p.id === identifier) ? identifier : "default", true);
+  }
+  $("#profile-select").onchange = () => selectProfile($("#profile-select").value);
+  $("#profile-filter").oninput = renderProfilePlugins;
+  for (const id of ["profile-name", "profile-mode", "profile-enabled"]) {
+    $("#" + id).onchange = () => { profileDirty = true; renderProfilePlugins(); };
+    $("#" + id).oninput = () => { profileDirty = true; };
+  }
+  $("#profile-all").onclick = () => { profileVisible().filter(p => p.supported).forEach(p => setProfilePlugin(p, true)); renderProfilePlugins(); };
+  $("#profile-none").onclick = () => { profileVisible().filter(p => p.supported).forEach(p => setProfilePlugin(p, false)); renderProfilePlugins(); };
+  $("#profile-copy").onclick = () => copyText(new URL(activeProfile.subscription_path, location.origin).href)
+    .then(() => setStatus("独立订阅地址已复制", "ok")).catch(error => setStatus(error.message, "error"));
+  $("#profile-new").onclick = async () => {
+    if (!await discardProfileChanges()) return;
+    const name = await askProfile("新增 T4 出口", "", "新 T4 出口");
+    if (!name) return;
+    try {
+      const result = await request("/t4/api/profiles", jsonOptions("POST", {
+        name: name.trim(), mode: "all", enabled: true, whitelist: [], blacklist: [],
+      }));
+      await loadProfiles(result.profile.id);
+      setStatus("独立 T4 出口已创建", "ok");
+    } catch (error) { setStatus(error.message, "error"); }
+  };
+  $("#profile-delete").onclick = async () => {
+    if (!activeProfile || activeProfile.id === "default"
+      || !await askProfile("删除 T4 出口", `确认删除“${activeProfile.name}”？插件文件和其他出口不受影响。`, null, true)) return;
+    try {
+      await request(`/t4/api/profiles/${activeProfile.id}`, {method: "DELETE"});
+      await loadProfiles("default");
+      setStatus("出口已删除，插件文件和其他出口未改动", "ok");
+    } catch (error) { setStatus(error.message, "error"); }
+  };
+  $("#profile-reload").onclick = async () => {
+    if (!await discardProfileChanges()) return;
+    try { await loadProfiles(); } catch (error) { setStatus(error.message, "error"); }
+  };
+  $("#profile-form").onsubmit = async event => {
+    event.preventDefault();
+    if (!activeProfile || profileSaving) return;
+    const identifier = activeProfile.id;
+    profileSaving = true;
+    $("#profile-form").setAttribute("aria-busy", "true");
+    const controls = [...$("#profile-form").querySelectorAll("input,select,button"),
+      $("#profile-select"), $("#profile-new"), $("#profile-delete"), $("#profile-reload")];
+    const disabled = controls.map(node => node.disabled);
+    controls.forEach(node => { node.disabled = true; });
+    try {
+      await request(`/t4/api/profiles/${identifier}`, jsonOptions("PUT", {
+        name: $("#profile-name").value.trim(), mode: $("#profile-mode").value,
+        enabled: $("#profile-enabled").checked, whitelist: [...profileWhite], blacklist: [...profileBlack],
+      }));
+      profileDirty = false;
+      await loadProfiles(identifier);
+      setStatus("出口已保存，刷新客户端订阅后更新站点列表", "ok");
+    } catch (error) { setStatus(error.message, "error"); }
+    finally {
+      profileSaving = false;
+      controls.forEach((node, index) => { if (node.isConnected) node.disabled = disabled[index]; });
+      $("#profile-form").setAttribute("aria-busy", "false");
+      $("#profile-delete").disabled = activeProfile?.id === "default";
+      renderProfilePlugins();
+    }
+  };
   async function copyText(value) {
     if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(value);
     const textarea = document.createElement("textarea");
@@ -777,6 +1034,7 @@
       await loadSubscriptionLink();
       await loadPlugins();
       await loadSources();
+      await loadProfiles();
       await loadTraces();
       await loadGate();
       setStatus(`已加载 ${plugins.length} 个本地插件`, "ok");

@@ -28,6 +28,7 @@ _FIELDS = {
     "memory_bytes", "anon_bytes", "file_bytes", "gateway_rss_bytes", "threads", "fds",
     "workers", "retained_workers", "proxy_workers", "busy_workers", "gate_workers",
     "interval_seconds", "version",
+    "profile", "client",
 }
 _LABEL = re.compile(r"^[\w.:-]{1,100}$", re.UNICODE)
 _MIMES = {
@@ -214,6 +215,7 @@ class TraceMiddleware:
             path = path[len(root_path):] or "/"
         route = next((name for prefix, name in (
             ("/t4/fm/", "fm"), ("/t4/media/", "media"),
+            ("/t4/profiles/", "profile"),
             ("/t4/images/", "image"),
             ("/t4/proxy/", "proxy"),
             ("/t4/api/diagnostics/", "diagnostics"),

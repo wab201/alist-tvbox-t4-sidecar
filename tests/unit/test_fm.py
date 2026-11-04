@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sidecar.gateway.config import Settings
 from sidecar.gateway.fm import build_fm_path
 from sidecar.gateway.main import create_app
+from sidecar.gateway.profiles import T4Profile
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.t4.adapter import T4Request
 
@@ -52,6 +53,7 @@ def test_fm_route_injects_source_and_plugin_without_client_parameters() -> None:
             plugin_id="csp_BiliBili",
             params={},
             proxy_base="http://testserver/",
+            profile=T4Profile(),
         )
     ]
 

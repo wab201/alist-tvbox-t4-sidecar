@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.11
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.12
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,14 +45,14 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用镜像标签为 `0.3.11`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.12`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.11`。
-更新到 `0.3.11` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.12`。
+更新到 `0.3.12` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
 对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
 使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
 
@@ -175,6 +175,15 @@ curl -fsS http://127.0.0.1:8765/t4/health
 
 用局域网设备访问 `http://NAS_IP:8765/t4/`，点击“复制影视订阅地址”导入影视。
 插件上传、管理、网盘播放和检测操作见 [使用指南](USAGE.md)。
+
+### 多个 T4 出口
+
+从 `0.3.12` 开始，可直接在管理页的“独立 T4 出口”创建多个订阅地址，
+分别勾选插件范围，再复制给不同客户端。所有出口共用现有端口和插件运行时，
+无需复制容器、增加环境变量或配置 Token。
+
+出口配置自动保存在原数据卷的 `plugins/profiles.json`。升级时保留原 `.env` 和整个数据卷，
+不需要手工迁移；现有 `/t4/config.json` 地址继续使用。配置修改后在对应客户端刷新订阅即可。
 
 ## 配置项
 

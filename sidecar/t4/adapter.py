@@ -21,6 +21,7 @@ from sidecar.at.subscription import (
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.navigation_settings import NavigationSettingsStore, can_search
+from sidecar.gateway.profiles import PluginPolicyDenied, T4Profile
 from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
 from sidecar.t4.navigation import NavigationSearches
 from sidecar.diagnostics import record, trace_id, trace_scope
@@ -59,6 +60,7 @@ class T4Request:
     plugin_id: str | None
     params: dict[str, Any]
     proxy_base: str = ""
+    profile: T4Profile | None = None
 
 
 class T4Adapter:
@@ -121,6 +123,8 @@ class T4Adapter:
         with trace_scope(
             source=request.source_id, plugin=request.plugin_id or "default",
             module=request.module,
+            profile=request.profile.id if request.profile is not None else "default",
+            client=request.params.get("client") or "unspecified",
         ):
             start = time.monotonic()
             record("adapter.start")
@@ -150,6 +154,8 @@ class T4Adapter:
             raise SubscriptionParseError("source was not found")
         snapshot = await self._snapshot(source)
         plugin = snapshot.plugin_for(request.plugin_id)
+        if request.profile is not None and not request.profile.allows(source.source_id, plugin.plugin_id):
+            raise PluginPolicyDenied("插件已在此 T4 出口禁用")
         if plugin.api == "csp_PianDan":
             if request.module == "search" and _bool_param(request.params.get("nav_search"), False):
                 return await self._navigation_search(request, source, plugin, snapshot)
@@ -171,7 +177,7 @@ class T4Adapter:
                         params["t"] = params["tid"] = metadata["target_id"]
                     payload = await self.dispatch(T4Request(
                         request.module, source.source_id, target.plugin_id,
-                        params, request.proxy_base,
+                        params, request.proxy_base, request.profile,
                     ))
                     return {**payload, "list": [
                         self._navigation_result(item, source, plugin, target)
@@ -192,6 +198,7 @@ class T4Adapter:
                     "play", source.source_id, plugin_id,
                     {**request.params, "play": play_id, "flag": flag},
                     request.proxy_base,
+                    request.profile,
                 ))
         if source.source_id == "local-uploaded":
             async with self.plugin_lock(source.source_id, plugin.plugin_id):
@@ -201,10 +208,11 @@ class T4Adapter:
                 return await self._invoke(request, source, plugin)
         return await self._invoke(request, source, plugin)
 
-    def _navigation_candidates(self, source, snapshot):
+    def _navigation_candidates(self, source, snapshot, profile=None):
         selected = (self._navigation_settings.selection(source.source_id)
                     if self._navigation_settings is not None else None)
         candidates = [item for item in snapshot.plugins if can_search(item)
+                      and (profile is None or profile.allows(source.source_id, item.plugin_id))
                       and (selected is None or item.plugin_id in selected)]
         if not candidates:
             raise SubscriptionParseError("片单搜源范围为空，请在 T4 管理台勾选可搜索插件")
@@ -251,7 +259,7 @@ class T4Adapter:
         keyword = str(request.params.get("wd") or request.params.get("key") or "").strip()
         if not keyword:
             raise SubscriptionParseError("片单搜索缺少关键词")
-        candidates = self._navigation_candidates(source, snapshot)
+        candidates = self._navigation_candidates(source, snapshot, request.profile)
         if _bool_param(request.params.get("nav_incremental"), False):
             return await self._navigation_incremental(
                 request, source, plugin, candidates, keyword)
@@ -283,6 +291,7 @@ class T4Adapter:
                          "pg": request.params.get("pg") or 1,
                          "client": request.params.get("client", "")},
                         request.proxy_base,
+                        request.profile,
                     ))
                     if loop.time() < deadline:
                         rows = [
@@ -342,6 +351,7 @@ class T4Adapter:
             source.source_id, plugin.plugin_id, keyword, year, request.proxy_base,
             str(request.params.get("client") or ""),
             [item.plugin_id for item in candidates],
+            request.profile.fingerprint if request.profile is not None else "",
         ], ensure_ascii=True).encode()).hexdigest()
         run, created = self._navigation_searches.get(
             key, str(request.params.get("nav_session") or ""), offset,
@@ -381,7 +391,7 @@ class T4Adapter:
                         "search", source.source_id, target.plugin_id,
                         {"wd": keyword, "quick": False, "pg": 1,
                          "client": request.params.get("client", "")},
-                        request.proxy_base))
+                        request.proxy_base, request.profile))
                     if time.monotonic() >= run.deadline:
                         return
                     rows = [row for row in payload.get("list") or []
@@ -446,7 +456,7 @@ class T4Adapter:
             years = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text))
             return next(iter(years)) if len(years) == 1 else text
 
-        candidates = self._navigation_candidates(source, snapshot)
+        candidates = self._navigation_candidates(source, snapshot, request.profile)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._navigation_budget
         results: dict[int, Any] = {}
@@ -469,6 +479,7 @@ class T4Adapter:
                         {"wd": title, "quick": False, "pg": 1,
                          "client": request.params.get("client", "")},
                         request.proxy_base,
+                        request.profile,
                     ))
                     match = next((
                         vod for vod in search.get("list", [])
@@ -485,6 +496,7 @@ class T4Adapter:
                         "detail", source.source_id, target.plugin_id,
                         {"ids": match["vod_id"], "client": request.params.get("client", "")},
                         request.proxy_base,
+                        request.profile,
                     ))
                     if loop.time() < deadline:
                         results[index] = target, next(iter(detail.get("list") or []), {})
