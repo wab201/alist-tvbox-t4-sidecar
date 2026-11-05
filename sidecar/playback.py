@@ -26,6 +26,17 @@ from sidecar.hls import (
 from sidecar.server_parser import ServerParseError, resolve_page
 
 
+HLS_PLAYER_FORMAT = "application/x-mpegURL"
+HLS_HTTP_MIME = "application/vnd.apple.mpegurl"
+
+
+def _is_hls(url: str, media_format: Any) -> bool:
+    mime = str(media_format or "").split(";", 1)[0].strip().lower()
+    return urlsplit(url).path.lower().endswith(".m3u8") or mime in {
+        "application/x-mpegurl", HLS_HTTP_MIME,
+    }
+
+
 class PlaybackError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
@@ -572,8 +583,10 @@ class PlaybackBridge:
         suffix = "." + target.path.rsplit(".", 1)[-1].lower() if "." in target.path else ".bin"
         if suffix not in {".mkv", ".mp4", ".avi", ".mov", ".ts", ".webm", ".iso", ".m3u8"}:
             suffix = ".bin"
-        is_hls = suffix == ".m3u8"
-        mime = "application/vnd.apple.mpegurl" if is_hls else "application/octet-stream"
+        is_hls = _is_hls(url, payload.get("format"))
+        if is_hls:
+            suffix = ".m3u8"
+        mime = HLS_HTTP_MIME if is_hls else "application/octet-stream"
         key = self._put(MediaAsset(
             None, upstream, dict(payload.get("header") or {}), mime,
             trace_id(), time.monotonic(), "hls" if is_hls else "at_proxy",
@@ -586,7 +599,7 @@ class PlaybackBridge:
         output = {**payload, "url": base.rstrip("/") + "/t4/media/" + key,
                   "header": {}, "parse": 0, "jx": 0, "playUrl": ""}
         if is_hls:
-            output["format"] = mime
+            output["format"] = HLS_PLAYER_FORMAT
         record("playback.cloud_relay", route="internal" if internal_url else "subscription",
                backend="at_powerlist", asset=key)
         return output
@@ -631,8 +644,19 @@ class PlaybackBridge:
             if media_format:
                 output["format"] = media_format
             record("playback.server_parser_complete")
+        is_hls = (
+            isinstance(url, str) and urlsplit(url).scheme in {"http", "https"}
+            and _is_hls(url, output.get("format"))
+        )
+        if is_hls:
+            # FongMi forwards this hint to Media3's source selector, which expects
+            # APPLICATION_M3U8. The HTTP response MIME remains independent.
+            output["format"] = HLS_PLAYER_FORMAT
         if isinstance(url, str) and url.startswith(base.rstrip("/") + "/t4/media/"):
-            if self.get(urlsplit(url).path.rsplit("/", 1)[-1]) is not None:
+            asset = self.get(urlsplit(url).path.rsplit("/", 1)[-1])
+            if asset is not None:
+                if asset.kind == "hls":
+                    output["format"] = HLS_PLAYER_FORMAT
                 return output
         if (
             isinstance(url, str) and url.startswith(base.rstrip("/") + "/t4/proxy/")
@@ -640,21 +664,16 @@ class PlaybackBridge:
             and self._proxies.get(urlsplit(url).path.rsplit("/", 1)[-1]) is not None
         ):
             return output
-        if isinstance(url, str) and urlsplit(url).scheme in {"http", "https"} and (
-            urlsplit(url).path.lower().endswith(".m3u8")
-            or str(output.get("format", "")).split(";")[0] in {
-                "application/vnd.apple.mpegurl", "application/x-mpegurl",
-            }
-        ) and output.get("parse") in {None, 0, "0"} and output.get("jx") in {None, 0, "0"}:
+        if is_hls and output.get("parse") in {None, 0, "0"} and output.get("jx") in {None, 0, "0"}:
             headers = output.get("header") or {}
             if not isinstance(headers, dict):
                 raise PlaybackError("invalid_play_headers")
             key = self._put(MediaAsset(
-                None, url, dict(headers), "application/vnd.apple.mpegurl",
+                None, url, dict(headers), HLS_HTTP_MIME,
                 trace_id(), time.monotonic(), "hls",
             ), ".m3u8")
             output.update(url=base.rstrip("/") + "/t4/media/" + key, header={}, parse=0, jx=0,
-                          playUrl="", format="application/vnd.apple.mpegurl")
+                          playUrl="", format=HLS_PLAYER_FORMAT)
             record("playback.hls_http", asset=key)
             return output
         if not isinstance(url, str) or not url.startswith("data:application/dash+xml"):

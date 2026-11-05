@@ -92,8 +92,10 @@ def setup_client(tmp_path, seen, **options):
 def media_url(client):
     payload = client.get("/t4/fm/source-a/demo/", params={"play": "raw"}).json()
     assert payload["header"] == {} and payload["parse"] == payload["jx"] == 0
+    assert payload["format"] == "application/x-mpegURL"
     master = client.get(payload["url"])
     assert master.status_code == 200
+    assert master.headers["content-type"].split(";")[0] == "application/vnd.apple.mpegurl"
     assert "cdn.example" not in master.text and "private" not in master.text
     variant = m3u8.loads(master.text).playlists[0].uri
     listing = client.get(variant)

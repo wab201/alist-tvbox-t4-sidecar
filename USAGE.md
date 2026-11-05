@@ -429,6 +429,7 @@ python -m scripts.check_compatibility --source env-at --plugin plugin-a --plugin
 | 公网 `404` | 反代是否遗漏或重复添加 `/t4`，详见部署指南 |
 | HTTPS 订阅可导入但切源失败 | 站点 API 是否仍使用相同公网协议、域名和端口 |
 | 有地址但无法解码 | 检查播放器对实际封装、编码及 DASH 的支持，文件后缀不能代表实际格式 |
+| HLS 提示 `Container Unsupported` | 升级至 0.3.16 后重新进入详情取链；播放器 JSON 的 HLS 类型已修正，仍失败时关联清单、密钥及分片日志排查 |
 | 上传失败或缺少模块 | 检查入口、配套文件和依赖，不要只上传依赖其他文件的主脚本 |
 
 普通直链不经过 Sidecar，因此没有对应的服务端媒体传输日志。

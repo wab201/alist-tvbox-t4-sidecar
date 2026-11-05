@@ -107,6 +107,7 @@ def test_parse_redirect_to_extensionless_hls_stays_on_server():
                                 "https://public.example")
         asset = bridge.get(result["url"].rsplit("/", 1)[-1])
         assert result["header"] == {} and result["parse"] == result["jx"] == 0
+        assert result["format"] == "application/x-mpegURL"
         assert asset.kind == "hls" and asset.url == "https://page.example/watch?id=1"
     finally:
         bridge.close()

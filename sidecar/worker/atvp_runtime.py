@@ -83,7 +83,7 @@ class AtvpRuntime:
                 # A server worker has no spring.jar device-side proxy to discover.
                 self._spider._resolve_local_proxy_base = lambda: None
             self._configure_cloud_playback(server_proxy=payload.get("_t4_server_proxy") is True)
-            name = self._spider.getName()
+            name = self._spider.getName() if hasattr(self._spider, "getName") else module_path.stem
         return {
             "result": self._json_value(result),
             "name": self._json_value(name),
@@ -497,9 +497,24 @@ class AtvpRuntime:
         try:
             signature.bind(*args)
         except TypeError:
-            # Older TVBox spiders implement searchContent(key, quick) only.
-            signature.bind(*args[:-1])
-            return args[:-1]
+            positional = [
+                parameter for parameter in signature.parameters.values()
+                if parameter.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ]
+            # Both bound loaders and unbound inner spiders reach this boundary.
+            if (
+                positional and len(positional) == len(args) - 1
+                and positional[-1].name in {"pg", "page"}
+            ):
+                adapted = (*args[:-2], args[-1])
+            else:
+                # Older TVBox spiders implement searchContent(key, quick) only.
+                adapted = args[:-1]
+            signature.bind(*adapted)
+            return adapted
         return args
 
     @staticmethod

@@ -1,13 +1,80 @@
+import gzip
+
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import pad, unpad
+from fastapi.testclient import TestClient
 import httpx
+import m3u8
 import pytest
 
 from sidecar.compatibility.probes import ResourceProbes
 from sidecar.playback import PlaybackBridge
+from tests.unit.test_playback_diagnostics import FakeWorker, application
 
 
 TS = (b"\x47" + bytes(187)) * 9
+
+
+@pytest.mark.parametrize("explicit_iv", [False, True])
+@pytest.mark.parametrize("compressed", [False, True])
+def test_real_http_delivery_preserves_aes_key_iv_and_encrypted_bytes(tmp_path, explicit_iv, compressed):
+    key, sequence = bytes(range(16)), 987
+    iv = (0x123 if explicit_iv else sequence).to_bytes(16, "big")
+    encrypted = AES.new(key, AES.MODE_CBC, iv).encrypt(pad(TS, 16))
+    manifest = (
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-MEDIA-SEQUENCE:987\n"
+        "#EXT-X-TARGETDURATION:5\n"
+        '#EXT-X-KEY:METHOD=AES-128,URI="key"'
+        + (",IV=0x123" if explicit_iv else "")
+        + "\n#EXTINF:5,\none.ts\n#EXT-X-ENDLIST\n"
+    ).encode()
+
+    class Worker(FakeWorker):
+        def call(self, runtime_key, plugin, method, params):
+            if method == "play":
+                return {
+                    "parse": 0, "jx": 0, "url": "https://cdn.example/index.m3u8",
+                    "format": "application/x-mpegURL",
+                    "header": {"User-Agent": "fixture-agent", "Referer": "https://allowed.example"},
+                }
+            return super().call(runtime_key, plugin, method, params)
+
+    def respond(request):
+        assert request.headers["user-agent"] == "fixture-agent"
+        assert request.headers["referer"] == "https://allowed.example"
+        if request.url.path == "/index.m3u8":
+            return httpx.Response(
+                200, content=gzip.compress(manifest) if compressed else manifest,
+                headers={"Content-Encoding": "gzip"} if compressed else {},
+            )
+        data = key if request.url.path == "/key" else encrypted
+        return httpx.Response(200, stream=httpx.ByteStream(data))
+
+    app = application(tmp_path, Worker())
+    app.state.playback.client.close()
+    app.state.playback.client = httpx.Client(transport=httpx.MockTransport(respond))
+    app.state.playback.media_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    with TestClient(app) as client:
+        player = client.get("/t4/fm/source-a/demo/", params={"play": "raw"}).json()
+        assert player["header"] == {}
+        assert player["format"] == "application/x-mpegURL"
+        response = client.get(player["url"])
+        assert response.status_code == 200
+        assert response.headers["content-type"].split(";")[0] == "application/vnd.apple.mpegurl"
+        assert "content-encoding" not in response.headers
+        assert int(response.headers["content-length"]) == len(response.content)
+        playlist = m3u8.loads(response.text)
+        assert playlist.media_sequence == sequence
+        segment = playlist.segments[0]
+        delivered_key = client.get(segment.key.uri).content
+        delivered_segment = client.get(segment.uri).content
+        delivered_iv = (
+            int(segment.key.iv, 16) if segment.key.iv else playlist.media_sequence
+        ).to_bytes(16, "big")
+        assert delivered_key == key
+        assert delivered_iv == iv
+        assert delivered_segment == encrypted
+        assert unpad(AES.new(delivered_key, AES.MODE_CBC, delivered_iv).decrypt(delivered_segment), 16) == TS
 
 
 @pytest.mark.parametrize("explicit_iv", [False, True])
