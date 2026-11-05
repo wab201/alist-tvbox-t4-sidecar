@@ -124,7 +124,7 @@ def test_piandan_unified_subscription_home_filters_and_title_navigation(tmp_path
             assert navigation["type"] == 4
             assert navigation["indexs"] == 1
             assert navigation["searchable"] == navigation["quickSearch"] == 0
-            assert sites[1] == PUSH
+            assert len(sites) == 1
             api = navigation["api"]
 
             def call(params):
@@ -189,12 +189,16 @@ def test_native_push_export_is_singleton_and_does_not_leak_into_metadata(tmp_pat
         config = client.get("/t4/config.json")
         assert config.status_code == 200
         sites = config.json()["sites"]
-        assert len(sites) == 4
-        assert len({site["key"] for site in sites}) == 4
-        assert [site for site in sites if site["key"] == "push_agent"] == [PUSH]
-        assert len([site for site in sites if site["type"] == 4]) == 2
-        assert sites[-1]["api"] == "csp_T4Relay"
-        assert sites[-1]["hide"] == 1
+        assert len(sites) == 2
+        assert len({site["key"] for site in sites}) == 2
+        assert all(site["type"] == 4 for site in sites)
+        assert "spider" not in config.json()
+        component = client.get(config.links["urn:t4-sidecar:client-component"]["url"]).json()
+        assert [site for site in component["sites"] if site["key"] == "push_agent"] == [PUSH]
+        assert len(component["sites"]) == 2
+        assert component["sites"][-1]["api"] == "csp_T4Relay"
+        assert component["sites"][-1]["hide"] == 1
+        assert "original-token" not in config.text
         snapshot = client.get("/t4/api/sources/at/subscription")
         plugin = snapshot.json()["plugins"][1]
         assert plugin["client_config_path"] == "/t4/config.json"
@@ -256,7 +260,9 @@ def test_push_client_config_preserves_site_fields_and_resolves_global_jar(
         response = client.get("/t4/config.json")
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert response.json()["sites"] == [{
+        assert response.json() == {"sites": []}
+        component = client.get(response.links["urn:t4-sidecar:client-component"]["url"]).json()
+        assert [site for site in component["sites"] if site["api"] == "csp_Push"] == [{
             **original, "key": "push_agent", "jar": site_jar or global_jar,
         }]
         assert original["key"] == "renamed-push"
@@ -283,13 +289,19 @@ def test_push_refresh_keeps_client_key_but_updates_original_jar_and_ext(tmp_path
         subscription_fetcher=changing,
     )
     with TestClient(app) as client:
-        first = client.get("/t4/config.json").json()["sites"][0]
+        def push():
+            response = client.get("/t4/config.json")
+            assert response.json() == {"sites": []}
+            descriptor = client.get(response.links["urn:t4-sidecar:client-component"]["url"]).json()
+            return next(site for site in descriptor["sites"] if site["api"] == "csp_Push")
+
+        first = push()
         revision = 2
-        assert client.get("/t4/config.json").json()["sites"][0] == first
+        assert push() == first
         assert client.get(
             "/t4/api/sources/at/subscription?refresh=true"
         ).status_code == 200
-        current = client.get("/t4/config.json").json()["sites"][0]
+        current = push()
         assert current["key"] == first["key"] == "push_agent"
         assert current["jar"].endswith("revision-2")
         assert current["ext"]["token"] == "token-2"

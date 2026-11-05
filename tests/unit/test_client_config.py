@@ -63,9 +63,9 @@ def test_config_is_importable_and_does_not_expose_at_material(tmp_path):
         assert response.headers["cache-control"] == "no-store"
         config = response.json()
         sites = [site for site in config["sites"] if site["type"] == 4]
-        assert len(config["sites"]) == len(sites) + 1
-        assert config["sites"][-1]["api"] == "csp_T4Relay"
-        assert config["sites"][-1]["jar"] == config["spider"]
+        assert set(config) == {"sites"}
+        assert config["sites"] == sites
+        assert all("jar" not in site for site in sites)
         assert adapter.requests == []
         assert len(sites) == 4
         assert len({site["key"] for site in sites}) == 4
@@ -110,9 +110,8 @@ def test_unified_subscription_exports_every_runtime_without_sample_whitelist(tmp
         response = client.get("/t4/config.json")
         config = response.json()
         sites = [site for site in config["sites"] if site["type"] == 4]
-        assert len(config["sites"]) == count + 1
-        assert config["sites"][-1]["hide"] == 1
-        assert config["sites"][-1]["api"] == "csp_T4Relay"
+        assert len(config["sites"]) == count
+        assert "spider" not in config
         assert len(sites) == count
         assert len({site["key"] for site in sites}) == count
         assert [site["name"] for site in sites] == [f"Plugin {i}" for i in range(count)]
@@ -143,9 +142,6 @@ def test_subscription_has_fixed_address_and_no_signed_routes(tmp_path, monkeypat
         assert set(parse_qs(api.query)) == {"t4_client"}
         assert client.get(site["api"]).status_code == 200
         assert client.get(api.path).status_code == 200
-        assert client.get("/t4/config.json?client=pure").json()["sites"][0]["api"] == (
-            api._replace(query="").geturl()
-        )
         assert client.get("/t4/config/obsolete-key.json").status_code == 404
         assert client.get("/t4/fm/env-at/bili/obsolete-key/").status_code == 404
 

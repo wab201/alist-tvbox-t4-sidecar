@@ -11,6 +11,7 @@ import httpx
 from sidecar.at.play_policy import drive_play_type
 from sidecar.at.subscription import PluginDescriptor, _builtin_route
 from sidecar.diagnostics import record
+from sidecar.t4.prewarm import NextEpisodeWarmup
 
 
 class NativeAtError(RuntimeError):
@@ -52,12 +53,20 @@ class NativeAtClient:
     def close(self) -> None:
         self._client.close()
 
+    def prefetch(self, plugin: PluginDescriptor, params: dict[str, Any]) -> dict[str, Any]:
+        if not NextEpisodeWarmup.eligible(plugin, str(params.get("id") or "")):
+            raise NativeAtUnsupportedError("prefetch requires a playable episode")
+        return self.call(plugin, "play", params, prefetch=True)
+
     def call(
         self,
         plugin: PluginDescriptor,
         method: str,
         params: dict[str, Any],
+        *,
+        prefetch: bool = False,
     ) -> dict[str, Any]:
+        budget = {"timeout": 3.0, "max_bytes": 64 * 1024} if prefetch else {}
         if plugin.t4_endpoint and plugin.plugin_type == "official_t4":
             if method == "play":
                 record("playback.policy", backend="official_t4", reason="at_managed")
@@ -69,6 +78,7 @@ class NativeAtClient:
                 plugin, "/t4/v", self._t4_query(method, params),
                 {"X-CLIENT": str(params.get("client") or "t4-sidecar")},
                 endpoint=plugin.t4_endpoint,
+                **budget,
             )
         if plugin.plugin_type != "builtin":
             raise NativeAtError("native bridge requires an AT-owned source")
@@ -87,7 +97,7 @@ class NativeAtClient:
             query = self._t4_query(method, params)
             headers = {"X-CLIENT": str(params.get("client") or "t4-sidecar")}
             payload = self._request(
-                plugin, "/t4/v", query, headers, endpoint=plugin.t4_endpoint,
+                plugin, "/t4/v", query, headers, endpoint=plugin.t4_endpoint, **budget,
             )
             if plugin.api == "csp_FishPanSouGroup" and method == "search":
                 return self._grouped_search(plugin, params, payload)
@@ -120,7 +130,7 @@ class NativeAtClient:
         # Unknown players must not be advertised to AT as DASH-capable FongMi.
         default_client = "t4-sidecar" if method == "play" else "com.fongmi.android.tv"
         headers = {"X-CLIENT": str(params.get("client") or default_client)}
-        payload = self._request(plugin, path, query, headers)
+        payload = self._request(plugin, path, query, headers, **budget)
         if plugin.api == "csp_PianDan" and method == "home":
             recommendations = self._request(plugin, path, {"t": "0"}, headers)
             payload["list"] = recommendations.get("list", [])
@@ -190,11 +200,28 @@ class NativeAtClient:
         headers: dict[str, str],
         *,
         endpoint: str | None = None,
+        timeout: float | None = None,
+        max_bytes: int | None = None,
     ) -> dict[str, Any]:
         endpoint = endpoint or self._endpoint(plugin, path)
         start = time.monotonic()
         try:
-            response = self._client.get(endpoint, params=query, headers=headers)
+            if max_bytes is None:
+                response = self._client.get(endpoint, params=query, headers=headers)
+            else:
+                with self._client.stream(
+                    "GET", endpoint, params=query,
+                    headers={**headers, "Accept-Encoding": "identity"}, timeout=timeout,
+                ) as upstream:
+                    content = bytearray()
+                    for chunk in upstream.iter_bytes():
+                        if (len(content) + len(chunk) > max_bytes
+                                or time.monotonic() - start > timeout):
+                            raise NativeAtError(
+                                "AT prefetch response exceeded its budget", reason="prefetch_budget",
+                            )
+                        content.extend(chunk)
+                    response = httpx.Response(upstream.status_code, content=bytes(content))
         except httpx.HTTPError as exc:
             record("at.failed", route=path.strip("/"), error=type(exc).__name__,
                    duration_ms=round((time.monotonic() - start) * 1000))
@@ -467,3 +494,7 @@ class NativeAtInvoker:
 
     def close(self) -> None:
         self._client.close()
+
+    def prefetch(self, runtime_key, plugin, params):
+        del runtime_key
+        return self._client.prefetch(plugin, params)

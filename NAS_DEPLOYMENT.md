@@ -24,7 +24,7 @@ chmod 600 .env
 编辑 `.env`，最少填写：
 
 ```dotenv
-T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.14
+T4_IMAGE=ghcr.io/wab201/alist-tvbox-t4-sidecar:0.3.15
 T4_PORT=8765
 ALIST_TVBOX_SUBSCRIPTION_URL=https://at.example/sub/REPLACE_ME/0
 ```
@@ -45,14 +45,14 @@ docker compose pull t4-sidecar
 docker compose up -d --no-deps --no-build t4-sidecar
 ```
 
-可用镜像标签为 `0.3.14`、`latest` 或对应构建的 `sha-<提交前七位>`。
+可用镜像标签为 `0.3.15`、`latest` 或对应构建的 `sha-<提交前七位>`。
 源码仓库公开不等于 GHCR 包公开；当前匿名拉取可能返回 `denied`。
 无需为此配置新凭证，直接使用下一种镜像归档方式或源码构建即可。
 
 ### 导入公开镜像归档
 
-现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.14`。
-更新到 `0.3.14` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
+现有公开 Release 归档为 `0.3.0`，不是最新的 `0.3.15`。
+更新到 `0.3.15` 可使用成功构建的 Actions 归档：在仓库 Actions 中选择
 对应版本提交的绿色构建，下载 `nas-image-<完整提交号>` 并解压。
 使用 GitHub CLI 也可下载，需要有读取 Actions 的登录权限：
 
@@ -367,6 +367,11 @@ Windows 可使用同一 Python 命令，将两个路径替换为本机 SDK 与 J
 编译用的 `Spider` ABI 桩只供编译，不打入 DEX；实际运行使用 FM 自带的父类。
 JAR 内 `t4-build.json` 记录输入源码哈希，CI 从源码重建后再运行测试和构建镜像。
 若主动移除该可选 JAR，容器仍提供纯 T4，不会下发失效的客户端加速入口。
+
+自 0.3.15 起，每个出口只有一个订阅地址，订阅正文不含 JAR；
+可选组件由 HTTP `Link` 头公布，下载或自检失败不影响同一地址的标准 T4。
+反代无需为增强另建订阅，只需按现有规则转发 `/t4/`；丢失 `Link` 头时保留标准 T4。
+只有适配了本项目发现扩展的客户端才会加载组件，不代表原版 FM 会自动加载。
 
 ## 部署排查
 

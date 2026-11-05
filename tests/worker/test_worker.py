@@ -1,6 +1,8 @@
 import os
 import json
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -84,3 +86,53 @@ def test_only_folder_detail_gets_an_automatic_expansion_budget(ids, timeout, exp
     session._lock = threading.Lock()
     session._responses = Responses()
     assert session.request("detail", {"ids": ids}, timeout=timeout) == {}
+
+
+def test_prefetch_does_not_start_worker_and_remote_failure_preserves_existing_runtime():
+    with WorkerPool() as pool:
+        assert pool.prefetch("source-a", {"id": "next"}) is None
+        assert pool.resource_summary()["workers"] == 0
+        old = pool.request("source-a", "inspect")
+        # An uninitialized plugin rejects speculative play, but its process stays usable.
+        with pytest.raises(WorkerRemoteError):
+            pool.prefetch("source-a", {"id": "next"})
+        assert pool.request("source-a", "inspect") == old
+
+
+def test_prefetch_skips_busy_worker_instead_of_queuing():
+    with WorkerPool(WorkerConfig(request_timeout=2)) as pool:
+        old = pool.request("source-a", "inspect")
+        session = pool._sessions["source-a"]
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            foreground = executor.submit(pool.request, "source-a", "delay", {"seconds": 0.2})
+            deadline = time.monotonic() + 2
+            while not session._lock.locked() and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert session._lock.locked()
+            assert pool.prefetch("source-a", {"id": "next"}) is None
+            assert foreground.result(timeout=3) == {"status": "complete"}
+        assert pool.request("source-a", "inspect") == old
+
+
+def test_prefetch_uses_worker_budget_and_recovers_a_truly_hung_rpc(tmp_path):
+    import base64
+    path = tmp_path / "slow.py"
+    path.write_text("""
+from base.spider import Spider
+import time
+class Spider(Spider):
+    def init(self, extend=""): pass
+    def getName(self): return "slow"
+    def playerContent(self, flag, id, vipFlags):
+        time.sleep(1)
+        return {"url": "https://cdn.example/next.mp4"}
+""", encoding="utf-8")
+    extend = base64.b64encode(json.dumps({"loader": str(path)}).encode()).decode()
+    with WorkerPool(WorkerConfig(request_timeout=10)) as pool:
+        pool.request("source-a", "init", {"extend": extend})
+        old = pool.request("source-a", "inspect")
+        pool._sessions["source-a"]._config = WorkerConfig(request_timeout=0.05)
+        with pytest.raises(WorkerTimeoutError):
+            pool.prefetch("source-a", {"id": "next"})
+        assert not pool.has_session("source-a")
+        assert pool.request("source-a", "inspect")["session_id"] != old["session_id"]

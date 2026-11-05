@@ -531,8 +531,8 @@ def test_official_and_atvp_plugins_keep_distinct_execution_owners(tmp_path):
             config = client.get("/t4/config.json").json()
             exported = [site for site in config["sites"] if site["type"] == 4]
             assert len(exported) == 3
-            assert len(config["sites"]) == 4
-            assert config["sites"][-1]["api"] == "csp_T4Relay"
+            assert len(config["sites"]) == 3
+            assert "spider" not in config
             for site in exported:
                 assert client.get(site["api"]).status_code == 200
             assert calls == [("raw", "raw_python", "home"), ("encrypted", "secspider", "home")]

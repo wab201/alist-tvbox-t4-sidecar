@@ -141,6 +141,7 @@ def create_app(
         playback_bridge=playback,
         image_bridge=images,
         navigation_settings=navigation_settings,
+        prewarm=False,
     ) if t4_adapter is None else t4_adapter
 
     async def gate_snapshot(source):
@@ -215,6 +216,9 @@ def create_app(
             maintenance_stop.set()
             await maintenance
             await compatibility.close()
+            for adapter in adapters:
+                if isinstance(adapter, T4Adapter):
+                    await adapter.aclose()
             if worker_pool is not None:
                 worker_pool.close()
             gate_invoker.close()

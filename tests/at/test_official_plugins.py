@@ -338,8 +338,8 @@ def test_remote_raw_encrypted_and_builtin_sources_keep_distinct_owners(tmp_path)
         )) as client:
             config = client.get("/t4/config.json").json()
             exported = [site for site in config["sites"] if site["type"] == 4]
-            assert len(config["sites"]) == 5
-            assert config["sites"][-1]["api"] == "csp_T4Relay"
+            assert len(config["sites"]) == 4
+            assert "spider" not in config
             assert len(exported) == 4
             for site in exported:
                 assert client.get(site["api"]).status_code == 200

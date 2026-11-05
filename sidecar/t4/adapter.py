@@ -24,6 +24,7 @@ from sidecar.gateway.navigation_settings import NavigationSettingsStore, can_sea
 from sidecar.gateway.profiles import PluginPolicyDenied, T4Profile
 from sidecar.t4.opaque import OpaqueIdStore, OpaqueValue
 from sidecar.t4.navigation import NavigationSearches
+from sidecar.t4.prewarm import NextEpisodeWarmup
 from sidecar.diagnostics import record, trace_id, trace_scope
 from sidecar.plugin_proxy import PluginProxyRegistry, rewrite_proxy_urls
 from sidecar.playback import PlaybackBridge
@@ -77,6 +78,7 @@ class T4Adapter:
         playback_bridge: PlaybackBridge | None = None,
         image_bridge: ImageBridge | None = None,
         navigation_settings: NavigationSettingsStore | None = None,
+        prewarm: bool = True,
     ) -> None:
         self._sources = source_registry
         self._worker = worker_invoker
@@ -95,15 +97,23 @@ class T4Adapter:
         self._navigation_budget = 25.0
         self._navigation_tasks: set[asyncio.Task] = set()
         self._navigation_searches = NavigationSearches()
+        self._prewarm = NextEpisodeWarmup() if prewarm else None
 
     def plugin_lock(self, source_id: str, plugin_id: str) -> asyncio.Lock:
         key = f"{source_id}:{plugin_id}"
         return self._plugin_locks.setdefault(key, asyncio.Lock())
 
     def release_memory(self) -> int:
-        return self._opaque_ids.release_memory() + self._navigation_searches.prune()
+        return (self._opaque_ids.release_memory() + self._navigation_searches.prune()
+                + (self._prewarm.prune() if self._prewarm is not None else 0))
+
+    async def aclose(self) -> None:
+        if self._prewarm is not None:
+            await self._prewarm.aclose()
 
     def close(self) -> None:
+        if self._prewarm is not None:
+            self._prewarm.close()
         for task in self._navigation_tasks:
             task.cancel()
         self._opaque_ids.close()
@@ -112,6 +122,8 @@ class T4Adapter:
         self._navigation_searches.runs.clear()
 
     async def reset_plugin(self, source_id: str, plugin_id: str) -> None:
+        if self._prewarm is not None:
+            self._prewarm.invalidate(source_id, plugin_id)
         for key in tuple(self._catalog_metadata):
             if key[:2] == (source_id, plugin_id):
                 self._catalog_metadata.pop(key, None)
@@ -571,26 +583,29 @@ class T4Adapter:
         server_proxy = source.cloud_playback == "server"
         if server_proxy and (backend == "worker" or method == "play"):
             params["_server_proxy"] = True
-        record("backend.invoke", backend=backend)
-        if plugin.plugin_type == "builtin" or plugin.t4_endpoint:
-            if self._native is None:
-                raise SubscriptionParseError("native bridge is not configured")
-            result = await asyncio.to_thread(
-                self._native.call,
-                runtime_key,
-                plugin,
-                method,
-                params,
-            )
-        else:
+        if backend == "worker":
             params["_proxy_base"] = request.proxy_base
+        record("backend.invoke", backend=backend)
+        invoker = self._worker if backend == "worker" else self._native
+        if invoker is None:
+            raise SubscriptionParseError("native bridge is not configured")
+        context_for = getattr(invoker, "prewarm_context", lambda _: None)
+        context = context_for(runtime_key)
+        key = (self._prewarm.key(source, plugin, params, request.proxy_base, request.profile,
+                                context=context)
+               if method == "play" and self._prewarm is not None
+               and self._prewarm.eligible(plugin, str(params.get("id") or "")) else None)
+        result = None
+        if key is not None:
+            result = (await self._prewarm.take_running(key) if backend == "worker"
+                      else self._prewarm.take(key))
+        if result is None:
             result = await asyncio.to_thread(
-                self._worker.call,
-                runtime_key,
-                plugin,
-                method,
-                params,
+                invoker.call, runtime_key, plugin, method, params,
             )
+        if self._prewarm is not None and method == "detail":
+            # Remember raw IDs before opaque wrapping, including delegated navigation.
+            self._prewarm.remember(source, plugin, result)
         payload = self._normalize(
             request.module,
             result,
@@ -610,6 +625,42 @@ class T4Adapter:
             payload = self._playback.relay_at(
                 payload, request.proxy_base, backend_api=plugin.backend_api,
                 token=plugin.token, internal_url=source.at_internal_url,
+            )
+        prefetch = getattr(invoker, "prefetch", None)
+        active_proxy = (backend == "worker" and isinstance(payload.get("url"), str)
+                        and "/t4/proxy/" in urlsplit(payload["url"]).path)
+        if active_proxy and key is not None:
+            # Arbitrary localProxy implementations may use mutable current-episode state.
+            record("playback.prewarm_skipped", reason="active_plugin_proxy")
+        if key is not None and prefetch is not None and payload.get("url") and not active_proxy:
+            context = context_for(runtime_key)
+
+            async def resolve_next(next_params):
+                async def resolve_current():
+                    if (self._sources.get(source.source_id) != source
+                            or context_for(runtime_key) != context):
+                        return None
+                    current = await self._snapshot(source)
+                    if current.plugin_for(plugin.plugin_id) != plugin:
+                        return None
+                    resolved = await asyncio.to_thread(
+                        prefetch, runtime_key, plugin, next_params,
+                    )
+                    return (self._normalize("play", resolved, source, plugin)
+                            if resolved is not None and context_for(runtime_key) == context
+                            else None)
+
+                if source.source_id == "local-uploaded":
+                    lock = self.plugin_lock(source.source_id, plugin.plugin_id)
+                    if lock.locked():
+                        return None
+                    async with lock:
+                        return await resolve_current()
+                return await resolve_current()
+
+            self._prewarm.schedule(
+                source, plugin, params, request.proxy_base, request.profile, resolve_next,
+                context=context,
             )
         return payload
 
@@ -907,6 +958,7 @@ class AtvpWorkerInvoker:
         self._initialized: dict[str, str] = {}
         self._state_lock = threading.Lock()
         self._locks: dict[str, threading.Lock] = {}
+        self._foreground: dict[str, int] = {}
         self._browse = BrowseContextStore()
         self._generations: dict[str, int] = {}
 
@@ -955,6 +1007,49 @@ class AtvpWorkerInvoker:
         method: str,
         params: dict[str, Any],
     ) -> Any:
+        with self._state_lock:
+            self._foreground[runtime_key] = self._foreground.get(runtime_key, 0) + 1
+        try:
+            return self._call(runtime_key, plugin, method, params)
+        finally:
+            with self._state_lock:
+                remaining = self._foreground[runtime_key] - 1
+                if remaining:
+                    self._foreground[runtime_key] = remaining
+                else:
+                    self._foreground.pop(runtime_key)
+
+    def prefetch(self, runtime_key, plugin, params):
+        lock = self._lock_for(runtime_key)
+        with self._state_lock:
+            if self._foreground.get(runtime_key) or not lock.acquire(blocking=False):
+                return None
+        try:
+            extend = plugin.worker_extend(server_proxy=bool(params.get("_server_proxy")))
+            if self._initialized.get(runtime_key) != extend:
+                return None
+            prefetch = getattr(self._pool, "prefetch", None)
+            if prefetch is None:
+                return None
+            worker_params = {key: value for key, value in params.items()
+                             if key not in {"_proxy_base", "_server_proxy"}}
+            result = prefetch(runtime_key, worker_params)
+            if result is not None:
+                self._sync_proxy(runtime_key)
+            endpoint = self._proxy_endpoints.get(runtime_key)
+            if endpoint and result is not None:
+                internal, key = endpoint
+                base = str(params.get("_proxy_base") or "").rstrip("/")
+                result = rewrite_proxy_urls(result, internal, base + "/t4/proxy/" + key)
+            return result
+        finally:
+            lock.release()
+
+    def prewarm_context(self, runtime_key):
+        identity = getattr(self._pool, "session_identity", lambda _: None)(runtime_key)
+        return self._generations.get(runtime_key, 0), identity
+
+    def _call(self, runtime_key, plugin, method, params):
         lease = getattr(self._pool, "lease", None)
         with self._lock_for(runtime_key), (lease(runtime_key) if lease else nullcontext()):
             params = dict(params)

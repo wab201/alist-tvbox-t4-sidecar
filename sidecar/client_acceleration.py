@@ -28,6 +28,7 @@ class ClientSession:
     profile: str
     created: float
     state: str = "pending"
+    native_sites: tuple[tuple[str, str, dict], ...] = ()
     plans: OrderedDict[str, tuple[float, str, str, dict]] = field(default_factory=OrderedDict)
 
 
@@ -59,21 +60,52 @@ class ClientAcceleration:
                 self.sessions.pop(key)
             return len(expired)
 
-    def offer(self, base: str, profile: str) -> ClientSession | None:
-        if not self.jar.is_file():
+    def offer(
+        self, base: str, profile: str, *,
+        native_sites: tuple[tuple[str, str, dict], ...] = (),
+    ) -> ClientSession | None:
+        if not self.jar.is_file() and not native_sites:
             record("client.acceleration_skipped", reason="artifact_unavailable")
             return None
         with self.lock:
             self.prune()
             session = ClientSession(
                 secrets.token_hex(16), secrets.token_hex(16),
-                base.rstrip("/"), profile, self.clock(),
+                base.rstrip("/"), profile, self.clock(), native_sites=native_sites,
             )
             self.sessions[session.id] = session
             while len(self.sessions) > self.capacity:
                 self.sessions.popitem(last=False)
         record("client.probe_offered", profile=profile)
         return session
+
+    def component(self, identity: str) -> dict | None:
+        with self.lock:
+            session = self.get(identity)
+            if session is None or session.state == "disabled":
+                return None
+            prefix = session.base + f"/t4/acceleration/{identity}"
+            policy = self.profiles.get(session.profile)
+            if policy is None:
+                return None
+            sites = [
+                dict(site) for source, plugin, site in session.native_sites
+                if policy.allows(source, plugin)
+            ]
+            result = {
+                "protocol": PROTOCOL, "optional": True, "fallback": "t4",
+                "sites": sites, "disable": prefix + "/disable",
+            }
+            if self.jar.is_file():
+                jar = prefix + "/client.jar"
+                result.update(spider=jar, ready=prefix + "/ready")
+                sites.append({
+                    "key": "t4_acceleration_" + identity,
+                    "name": "下载增强", "api": "csp_T4Relay", "type": 3,
+                    "jar": jar, "hide": 1, "indexs": 0,
+                    "searchable": 0, "quickSearch": 0, "filterable": 0, "changeable": 0,
+                })
+            return result
 
     def get(self, identity: str) -> ClientSession | None:
         with self.lock:
@@ -87,7 +119,7 @@ class ClientAcceleration:
     def artifact(self, identity: str) -> bytes | None:
         with self.lock:
             session = self.get(identity)
-            if session is None or not self.jar.is_file():
+            if session is None or session.state == "disabled" or not self.jar.is_file():
                 return None
             settings = {
                 "session": session.id, "challenge": session.challenge,
@@ -98,6 +130,8 @@ class ClientAcceleration:
         with zipfile.ZipFile(self.jar) as original, zipfile.ZipFile(
             output, "w", compression=zipfile.ZIP_DEFLATED,
         ) as generated:
+            if not original.read("classes.dex").startswith(b"dex\n"):
+                raise ValueError("invalid component DEX")
             for info in original.infolist():
                 generated.writestr(info, original.read(info.filename))
             # Properties.load(InputStream) expects Latin-1 with Unicode escapes.

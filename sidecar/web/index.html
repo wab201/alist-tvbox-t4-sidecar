@@ -125,7 +125,6 @@
       <h2 id="subscription-heading">影视订阅</h2>
       <button id="copy-subscription" class="icon" title="复制影视订阅地址" aria-label="复制影视订阅地址" disabled><img src="/t4/assets/icons/copy.svg" alt=""></button>
     </div>
-    <label>交付模式<select id="subscription-mode"><option value="auto">自动增强（默认）</option><option value="pure">纯 T4</option></select></label>
     <div class="subscription-entry"><code id="subscription-url">正在读取</code></div>
     <span id="client-acceleration-state" class="badge"></span>
     <p id="local-address-warning" hidden>当前为本机地址，电视端不可访问。请通过 NAS 或电脑的局域网 IP 打开管理台。</p>
@@ -458,31 +457,18 @@
     subscriptionUrl = new URL(payload.subscription_path, location.origin).href;
     $("#subscription-url").textContent = subscriptionUrl;
     $("#copy-subscription").disabled = false;
-    updateSubscriptionMode();
     $("#local-address-warning").hidden = !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
   }
   $("#copy-subscription").onclick = () => copyText(subscriptionUrl)
     .then(() => setStatus("影视订阅地址已复制", "ok"))
     .catch(error => setStatus(error.message, "error"));
   function subscriptionAddress(path) {
-    const url = new URL(path, location.origin);
-    const mode = $("#subscription-mode").value;
-    if (mode !== "auto") url.searchParams.set("client", mode);
-    return url.href;
+    return new URL(path, location.origin).href;
   }
-  function updateSubscriptionMode() {
-    subscriptionUrl = subscriptionAddress("/t4/config.json");
-    $("#subscription-url").textContent = subscriptionUrl;
-    const profileCode = $("#profile-url");
-    if (profileCode.textContent) {
-      profileCode.textContent = subscriptionAddress(new URL(profileCode.textContent).pathname);
-    }
-  }
-  $("#subscription-mode").onchange = updateSubscriptionMode;
   request("/t4/api/client-acceleration").then(value => {
     $("#client-acceleration-state").textContent = value.available
-      ? `增强组件：已就绪 ${value.ready} · 待确认 ${value.pending}`
-      : "增强组件不可用 · 纯 T4";
+      ? `组件能力：已确认 ${value.ready} · 待确认 ${value.pending}`
+      : "标准 T4";
   }).catch(() => {});
   function profileVisible() {
     const query = $("#profile-filter").value.trim().toLocaleLowerCase();

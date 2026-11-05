@@ -5,6 +5,7 @@ from pathlib import Path
 import struct
 from urllib.parse import parse_qs, urlsplit
 import zipfile
+import zlib
 
 import httpx
 import pytest
@@ -45,9 +46,17 @@ def offer(client, path="/t4/config.json", headers=None):
     response = client.get(path, headers=headers or {"User-Agent": "okhttp/4.12.0"})
     assert response.status_code == 200
     config = response.json()
-    assert config["sites"][-1]["hide"] == 1
-    assert config["sites"][-1]["searchable"] == 0
-    jar = client.get(config["spider"])
+    assert set(config) == {"sites"}
+    assert all(site["type"] == 4 and "jar" not in site for site in config["sites"])
+    component = client.get(response.links["urn:t4-sidecar:client-component"]["url"])
+    assert component.status_code == 200
+    descriptor = component.json()
+    assert descriptor["optional"] is True
+    assert descriptor["fallback"] == "t4"
+    assert descriptor["sites"][-1]["hide"] == 1
+    assert descriptor["sites"][-1]["searchable"] == 0
+    jar = client.get(descriptor["spider"])
+    assert jar.status_code == 200
     with zipfile.ZipFile(io.BytesIO(jar.content)) as archive:
         assert archive.read("classes.dex").startswith(b"dex\n")
         properties = dict(
@@ -75,10 +84,9 @@ def test_default_offer_is_brand_independent_and_does_not_require_loading(client,
     response = client.get("/t4/config.json", headers=headers)
     assert response.status_code == 200
     config = response.json()
-    assert "spider" in config
-    assert config["sites"][-1]["api"] == "csp_T4Relay"
-    assert config["sites"][-1]["hide"] == 1
-    assert all(site["type"] == 4 for site in config["sites"][:-1])
+    assert set(config) == {"sites"}
+    assert all(site["type"] == 4 and "jar" not in site for site in config["sites"])
+    assert "urn:t4-sidecar:client-component" in response.links
     assert response.headers["cache-control"] == "no-store"
     assert "user-agent" not in response.headers.get("vary", "").lower()
     api = config["sites"][0]["api"]
@@ -90,10 +98,6 @@ def test_default_offer_is_brand_independent_and_does_not_require_loading(client,
         "header": {"User-Agent": "signed-agent", "Referer": "https://origin.example/"},
     }
     assert client.get("/t4/api/client-acceleration").json()["ready"] == 0
-    pure = client.get("/t4/config.json?client=pure", headers=headers)
-    assert "spider" not in pure.json()
-    assert all(site["type"] == 4 for site in pure.json()["sites"])
-    assert "t4_client" not in pure.text
 
 
 def test_jar_download_does_not_enable_playback_and_bad_proofs_stay_plain(client):
@@ -134,19 +138,65 @@ def test_expired_component_cannot_confirm_and_playback_returns_original(client, 
         assert play(client, api).json()["url"].startswith("proxy://")
     now[0] = (acceleration.ttl if mode == "ready" else acceleration.pending_ttl) + 1
     assert not confirm(client, properties)
-    assert client.get(config["spider"]).status_code == 410
+    prefix = "/t4/acceleration/" + properties["session"]
+    assert client.get(prefix + "/client.jar").status_code == 410
+    assert client.get(prefix + "/component.json").status_code == 410
     assert play(client, api).json() == original
     assert acceleration.summary()["ready"] == 0
 
 
-def test_missing_component_returns_same_subscription_as_pure_t4(client, tmp_path):
-    pure = client.get("/t4/config.json?client=pure").json()
+def test_missing_component_keeps_same_subscription_and_original_playback(client, tmp_path):
+    config, proof = offer(client)
+    original = play(client, config["sites"][0]["api"]).json()
     client.app.state.acceleration.jar = tmp_path / "missing.jar"
     response = client.get("/t4/config.json", headers={"X-Client": "unknown"})
     assert response.status_code == 200
-    assert response.json() == pure
+    assert set(response.json()) == {"sites"}
+    assert all(site["type"] == 4 for site in response.json()["sites"])
+    assert "Link" not in response.headers
+    assert "t4_client" not in response.text
+    assert play(client, response.json()["sites"][0]["api"]).json() == original
+    assert client.get(f"/t4/acceleration/{proof['session']}/client.jar").status_code == 410
     assert client.get("/t4/api/client-acceleration").json()["available"] is False
-    assert play(client, pure["sites"][0]["api"]).json()["url"].startswith("https://")
+    assert play(client, config["sites"][0]["api"]).json() == original
+
+
+@pytest.mark.parametrize("failure", [
+    "download", "zip", "dex_missing", "dex_invalid", "decompression", "encrypted", "truncated",
+])
+def test_failed_component_never_breaks_import_or_playback(client, tmp_path, monkeypatch, failure):
+    acceleration = client.app.state.acceleration
+    if failure == "zip":
+        acceleration.jar = tmp_path / "broken.jar"
+        acceleration.jar.write_bytes(b"not a zip archive")
+    elif failure in {"dex_missing", "dex_invalid"}:
+        acceleration.jar = tmp_path / "broken.jar"
+        with zipfile.ZipFile(acceleration.jar, "w") as archive:
+            archive.writestr("other" if failure == "dex_missing" else "classes.dex", b"invalid")
+    else:
+        def unavailable(identity):
+            error = {
+                "download": OSError, "decompression": zlib.error,
+                "encrypted": RuntimeError, "truncated": EOFError,
+            }[failure]
+            raise error("unavailable optional component")
+        monkeypatch.setattr(acceleration, "artifact", unavailable)
+
+    response = client.get("/t4/config.json")
+    assert response.status_code == 200
+    # A strict T4-only importer need not understand a JAR or any extra JSON field.
+    config = response.json()
+    assert set(config) == {"sites"}
+    assert all(site["type"] == 4 and "jar" not in site for site in config["sites"])
+    api = config["sites"][0]["api"]
+    original = play(client, api).json()
+    descriptor = client.get(response.links["urn:t4-sidecar:client-component"]["url"]).json()
+    assert client.get(descriptor["spider"]).status_code == 410
+    session = parse_qs(urlsplit(api).query)["t4_client"][0]
+    assert acceleration.get(session).state == "disabled"
+    assert play(client, api).json() == original
+    assert client.get(descriptor["ready"].replace("/ready", "/component.json")).status_code == 410
+    assert client.get("/t4/config.json").status_code == 200
 
 
 def test_empty_profile_does_not_offer_unused_component(client):
@@ -191,6 +241,8 @@ def test_disable_reverts_to_plain_without_restarting_workers(client):
     client.post("/t4/acceleration/" + properties["session"] + "/disable")
     assert play(client, api).json()["url"].startswith("https://")
     assert not confirm(client, properties)
+    assert client.get(f"/t4/acceleration/{properties['session']}/component.json").status_code == 410
+    assert client.get(f"/t4/acceleration/{properties['session']}/client.jar").status_code == 410
     assert client.get("/t4/api/client-acceleration").json()["disabled"] == 1
 
 
@@ -209,8 +261,9 @@ def test_capabilities_are_profile_scoped_and_respect_changed_plugin_policy(clien
 
 
 def test_packaged_dex_matches_current_sources_and_does_not_bundle_host_abi(client):
-    config, _ = offer(client)
-    with zipfile.ZipFile(io.BytesIO(client.get(config["spider"]).content)) as archive:
+    _, proof = offer(client)
+    jar = client.get(f"/t4/acceleration/{proof['session']}/client.jar")
+    with zipfile.ZipFile(io.BytesIO(jar.content)) as archive:
         manifest = json.loads(archive.read("t4-build.json"))
         root = Path(__file__).resolve().parents[2]
         assert manifest["sources"] == {
@@ -261,7 +314,7 @@ def test_both_t4_route_shapes_use_confirmed_capability_not_brand(
     assert response.json()["url"].startswith("proxy://")
 
 
-def test_native_jar_is_unchanged_and_helper_is_not_a_user_source(tmp_path):
+def test_native_jar_is_optional_and_old_descriptor_respects_policy_changes(tmp_path):
     async def native_fetcher(_):
         return {"spider": "https://at.example/spring.jar", "sites": [
             {"key": "push", "name": "AT push", "api": "csp_Push", "type": 3,
@@ -272,14 +325,94 @@ def test_native_jar_is_unchanged_and_helper_is_not_a_user_source(tmp_path):
     app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry((source(),)),
                      subscription_fetcher=native_fetcher, t4_adapter=MediaAdapter())
     with TestClient(app) as client:
-        ordinary = client.get("/t4/config.json?client=pure").json()["sites"]
-        enhanced = client.get("/t4/config.json").json()
-        push = next(site for site in ordinary if site["type"] == 3)
-        assert next(site for site in enhanced["sites"] if site["key"] == push["key"]) == push
-        assert enhanced["sites"][-1]["api"] == "csp_T4Relay"
-        assert enhanced["sites"][-1]["hide"] == 1
-        assert all(site["type"] == 4 for site in enhanced["sites"]
-                   if site["key"] != push["key"] and not site.get("hide"))
+        response = client.get("/t4/config.json")
+        assert all(site["type"] == 4 for site in response.json()["sites"])
+        assert "spring.jar" not in response.text
+        assert "private" not in response.text
+        url = response.links["urn:t4-sidecar:client-component"]["url"]
+        descriptor = client.get(url).json()
+        push = next(site for site in descriptor["sites"] if site["api"] == "csp_Push")
+        assert push["jar"] == "https://at.example/native.jar"
+        assert push["ext"] == {"api": "https://at.example", "token": "private"}
+        assert descriptor["sites"][-1]["api"] == "csp_T4Relay"
+        assert descriptor["sites"][-1]["hide"] == 1
+        plugins = client.get("/t4/api/profiles/default/plugins").json()["plugins"]
+        key = next(item["key"] for item in plugins if item["plugin_id"] == "push")
+        client.put("/t4/api/profiles/default", json={
+            "name": "default", "mode": "blacklist", "blacklist": [key],
+        })
+        assert not any(site["api"] == "csp_Push" for site in client.get(url).json()["sites"])
+
+
+def test_optional_descriptor_cors_is_exposed_without_opening_management(client):
+    origin = {"Origin": "https://player.example"}
+    response = client.get("/t4/config.json", headers=origin)
+    assert "link" in response.headers["access-control-expose-headers"].lower()
+    url = response.links["urn:t4-sidecar:client-component"]["url"]
+    descriptor = client.get(url, headers=origin)
+    assert descriptor.headers["access-control-allow-origin"] == "*"
+    assert descriptor.headers["cache-control"] == "no-store"
+    assert client.get(descriptor.json()["spider"], headers=origin).headers[
+        "access-control-allow-origin"
+    ] == "*"
+    assert "access-control-allow-origin" not in client.get(
+        "/t4/api/profiles", headers=origin,
+    ).headers
+
+
+def test_optional_component_failure_after_ready_downgrades_same_api(client, monkeypatch):
+    config, proof = offer(client)
+    api = config["sites"][0]["api"]
+    original = play(client, api).json()
+    assert confirm(client, proof)
+    enhanced = play(client, api).json()
+    plan_url = parse_qs(enhanced["url"][8:])["plan"][0]
+
+    def unavailable(identity):
+        raise OSError("component no longer readable")
+
+    monkeypatch.setattr(client.app.state.acceleration, "artifact", unavailable)
+    assert client.get(f"/t4/acceleration/{proof['session']}/client.jar").status_code == 410
+    assert play(client, api).json() == original
+    assert client.get(plan_url).status_code == 410
+    assert not confirm(client, proof)
+
+
+def test_native_only_component_without_accelerator_keeps_standard_subscription(tmp_path):
+    async def native_fetcher(_):
+        return {"sites": [{
+            "key": "push", "name": "AT push", "api": "csp_Push", "type": 3,
+            "jar": "https://at.example/native.jar",
+        }]}
+
+    app = create_app(
+        Settings(plugin_dir=str(tmp_path)), SourceRegistry((source(),)),
+        subscription_fetcher=native_fetcher, t4_adapter=MediaAdapter(),
+    )
+    app.state.acceleration.jar = tmp_path / "missing.jar"
+    with TestClient(app) as client:
+        profile = client.post("/t4/api/profiles", json={"name": "Native"}).json()["profile"]
+        response = client.get(profile["subscription_path"])
+        assert response.json() == {"sites": []}
+        url = response.links["urn:t4-sidecar:client-component"]["url"]
+        descriptor = client.get(url).json()
+        assert "spider" not in descriptor
+        assert "ready" not in descriptor
+        assert descriptor["sites"][0]["api"] == "csp_Push"
+        client.delete("/t4/api/profiles/" + profile["id"])
+        assert client.get(url).status_code == 410
+        assert client.get(profile["subscription_path"]).status_code == 404
+
+
+def test_confirmed_default_session_does_not_enable_another_profile(client):
+    config, proof = offer(client)
+    assert confirm(client, proof)
+    profile = client.post("/t4/api/profiles", json={"name": "Isolated"}).json()["profile"]
+    api = client.get(profile["subscription_path"]).json()["sites"][0]["api"]
+    assert play(client, api).json()["url"].startswith("https://")
+    other_api = httpx.URL(api).copy_merge_params({"t4_client": proof["session"]})
+    assert play(client, str(other_api)).json()["url"].startswith("https://")
+    assert play(client, config["sites"][0]["api"]).json()["url"].startswith("proxy://")
 
 
 def test_ready_client_plan_retention_is_bounded_and_policy_changes_revoke_new_plans(client):

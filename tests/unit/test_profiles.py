@@ -53,10 +53,9 @@ def test_profile_exports_are_independent_and_enforce_plugin_policy(tmp_path):
         assert config.headers["access-control-allow-origin"] == "*"
         exported = config.json()
         sites = [site for site in exported["sites"] if site["type"] == 4]
-        assert len(exported["sites"]) == 2
-        assert exported["sites"][-1]["api"] == "csp_T4Relay"
-        assert "/t4/acceleration/" in exported["spider"]
-        assert exported["sites"][-1]["jar"] == exported["spider"]
+        assert len(exported["sites"]) == 1
+        assert set(exported) == {"sites"}
+        assert "urn:t4-sidecar:client-component" in config.links
         assert [site["key"] for site in sites] == [bili["key"]]
         assert all(site["api"].startswith(f"http://nas.test:8765/t4/profiles/{profile_id}/fm/") for site in sites)
         assert client.get("/t4/config.json").json()["sites"][0]["key"] == bili["key"]

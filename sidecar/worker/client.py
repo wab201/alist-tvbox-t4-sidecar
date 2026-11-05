@@ -320,6 +320,11 @@ class WorkerPool:
         with self._lock:
             return source_id in self._sessions
 
+    def session_identity(self, source_id: str) -> int | None:
+        with self._lock:
+            session = self._sessions.get(source_id)
+            return session.pid if session is not None else None
+
     def _session_for(self, source_id: str) -> WorkerSession:
         with self._lock:
             session = self._sessions.get(source_id)
@@ -372,6 +377,32 @@ class WorkerPool:
             session = self._sessions.pop(source_id, None)
         if session is not None:
             session.close()
+
+    def prefetch(self, source_id: str, params: dict[str, Any]) -> Any:
+        # Never start another runtime or queue behind foreground RPC/maintenance.
+        with self.lease(source_id):
+            with self._lock:
+                session = self._sessions.get(source_id)
+            if session is None or not session._lock.acquire(blocking=False):
+                return None
+            broken = False
+            try:
+                if session._maintenance_request is not None:
+                    return None
+                try:
+                    return session._request("play", params, timeout=None)
+                except WorkerRemoteError:
+                    # A speculative parser error must not destroy a working media proxy.
+                    raise
+                except WorkerError:
+                    # Broken RPC cannot be reused: its next response may have the old ID.
+                    broken = True
+                    raise
+            finally:
+                session._last_activity = time.monotonic()
+                session._lock.release()
+                if broken:
+                    self.restart(source_id)
 
     def proxy_endpoint(self, source_id: str) -> str | None:
         with self._lock:

@@ -67,8 +67,14 @@ def test_proxy_subscription_preserves_external_origin(
         parsed = urlsplit(api)
         assert parsed._replace(query="").geturl() == expected_origin + "/t4/fm/at/media/"
         session = parse_qs(parsed.query)["t4_client"][0]
-        assert config["spider"] == expected_origin + f"/t4/acceleration/{session}/client.jar"
-        assert client.get(urlsplit(config["spider"]).path).status_code == 200
+        component_url = response.links["urn:t4-sidecar:client-component"]["url"]
+        assert component_url == expected_origin + f"/t4/acceleration/{session}/component.json"
+        component = client.get(urlsplit(component_url).path)
+        assert component.status_code == 200
+        jar = component.json()["spider"]
+        assert jar == expected_origin + f"/t4/acceleration/{session}/client.jar"
+        assert client.get(urlsplit(jar).path).status_code == 200
+        assert set(config) == {"sites"}
         path = parsed._replace(scheme="", netloc="").geturl()
         assert client.get(str(httpx.URL(path).copy_merge_params(
             {"filter": "true"}

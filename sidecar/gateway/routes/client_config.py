@@ -30,9 +30,11 @@ def build_client_config_router(
     async def client_config_link() -> dict[str, str]:
         return {"subscription_path": "/t4/config.json"}
 
-    async def sites_for(source: SourceConfig, base_url: str, profile) -> list[dict[str, Any]]:
+    async def sites_for(source: SourceConfig, base_url: str, profile) -> tuple[
+        list[dict[str, Any]], list[tuple[str, str, dict[str, Any]]],
+    ]:
         if profile.mode == "whitelist" and not profile.whitelist:
-            return []
+            return [], []
         snapshot = local_snapshot_provider(source.source_id)
         if snapshot is None:
             try:
@@ -45,13 +47,15 @@ def build_client_config_router(
                         "message": f"source {source.source_id} is unavailable",
                     },
                 ) from exc
-        sites = []
+        sites, native_sites = [], []
         seen = set()
         for plugin in snapshot.plugins:
             if not profile.allows(source.source_id, plugin.plugin_id):
                 continue
             if plugin.native_client_site:
-                sites.append(dict(plugin.native_client_site))
+                native_sites.append((
+                    source.source_id, plugin.plugin_id, dict(plugin.native_client_site),
+                ))
                 continue
             if plugin.public_metadata().get("t4_supported", True) is False:
                 continue
@@ -76,7 +80,7 @@ def build_client_config_router(
                     source.source_id, plugin.plugin_id, profile.id
                 ),
             })
-        return sites
+        return sites, native_sites
 
     @router.get("/t4/config.json")
     @router.get("/t4/profiles/{profile_id}/config.json")
@@ -91,31 +95,33 @@ def build_client_config_router(
             sites_for(source, str(request.base_url).rstrip("/"), profile)
             for source in source_registry.all()
         ))
-        sites = []
+        sites, native_sites = [], []
         seen = set()
-        for group in groups:
+        for group, native_group in groups:
             for site in group:
                 if site["key"] not in seen:
                     sites.append(site)
                     seen.add(site["key"])
+            for source_id, plugin_id, site in native_group:
+                if site["key"] not in seen:
+                    native_sites.append((source_id, plugin_id, site))
+                    seen.add(site["key"])
         output = {"sites": sites}
         if (
             acceleration is not None
-            and request.query_params.get("client") != "pure"
-            and any(site.get("type") == 4 for site in sites)
+            and (sites or native_sites)
         ):
-            session = acceleration.offer(str(request.base_url), profile_id)
+            session = acceleration.offer(
+                str(request.base_url), profile_id, native_sites=tuple(native_sites),
+            )
             if session is not None:
-                output["spider"] = session.base + f"/t4/acceleration/{session.id}/client.jar"
+                # Keep optional loaders out of the import-critical JSON contract.
+                response.headers["Link"] = (
+                    f'<{session.base}/t4/acceleration/{session.id}/component.json>; '
+                    'rel="urn:t4-sidecar:client-component"; type="application/json"'
+                )
                 for site in sites:
-                    if site.get("type") == 4:
-                        site["api"] += "?t4_client=" + session.id
-                sites.append({
-                    "key": "t4_acceleration_" + session.id,
-                    "name": "下载增强", "api": "csp_T4Relay", "type": 3,
-                    "jar": output["spider"], "hide": 1, "indexs": 0,
-                    "searchable": 0, "quickSearch": 0, "filterable": 0, "changeable": 0,
-                })
+                    site["api"] += "?t4_client=" + session.id
         return output
 
     return router

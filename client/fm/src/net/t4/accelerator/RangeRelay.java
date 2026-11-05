@@ -7,6 +7,8 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -15,6 +17,57 @@ import java.util.regex.Pattern;
 public final class RangeRelay {
     private static final Pattern RANGE = Pattern.compile("bytes=(\\d*)-(\\d*)");
     private static final Pattern BOUNDS = Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)");
+    private static final long METADATA_TTL = 30_000_000_000L;
+    private static final long IDLE_REOPEN = 15_000_000_000L;
+    private static final Map<MetadataKey, Metadata> metadata = new LinkedHashMap<>();
+
+    private static final class MetadataKey {
+        final String url;
+        final Map<String, String> headers;
+
+        MetadataKey(String url, Map<String, String> headers) {
+            this.url = url;
+            this.headers = new HashMap<>(headers);
+        }
+
+        @Override public boolean equals(Object other) {
+            if (!(other instanceof MetadataKey)) return false;
+            MetadataKey key = (MetadataKey) other;
+            return url.equals(key.url) && headers.equals(key.headers);
+        }
+
+        @Override public int hashCode() { return 31 * url.hashCode() + headers.hashCode(); }
+    }
+
+    private static final class Metadata {
+        final long total, created = System.nanoTime();
+        final String etag, mime, modified;
+
+        Metadata(long total, String etag, String mime, String modified) {
+            this.total = total;
+            this.etag = etag;
+            this.mime = mime;
+            this.modified = modified;
+        }
+    }
+
+    private static synchronized Metadata cached(MetadataKey key) {
+        Iterator<Metadata> entries = metadata.values().iterator();
+        while (entries.hasNext()) {
+            if (System.nanoTime() - entries.next().created >= METADATA_TTL) entries.remove();
+        }
+        return metadata.get(key);
+    }
+
+    private static synchronized void remember(MetadataKey key, Metadata value) {
+        metadata.remove(key);
+        metadata.put(key, value);
+        while (metadata.size() > 8) metadata.remove(metadata.keySet().iterator().next());
+    }
+
+    private static synchronized void forget(MetadataKey key) { metadata.remove(key); }
+
+    public static synchronized void clearMetadata() { metadata.clear(); }
 
     public static final class Reply {
         public final int status;
@@ -81,16 +134,30 @@ public final class RangeRelay {
     public static Reply open(String direct, String relay, Map<String, String> headers,
                              String range, String ifRange) throws IOException {
         HttpURLConnection head = null;
+        MetadataKey key = new MetadataKey(direct, headers);
+        Metadata known = cached(key);
         long total = -1;
         String etag = "", mime = "application/octet-stream", modified = "";
-        try {
+        if (known != null) {
+            total = known.total;
+            etag = known.etag;
+            mime = known.mime;
+            modified = known.modified;
+        } else try {
             head = connect(direct, "HEAD", headers);
+            // Optional metadata must not consume the full media timeout before a healthy GET.
+            head.setConnectTimeout(1500);
+            head.setReadTimeout(1000);
             String encoding = header(head, "Content-Encoding");
             if (head.getResponseCode() == 200 && (encoding.isEmpty() || encoding.equalsIgnoreCase("identity"))) {
                 total = size(head);
                 etag = header(head, "ETag");
                 modified = header(head, "Last-Modified");
                 if (!header(head, "Content-Type").isEmpty()) mime = header(head, "Content-Type");
+                if (total > 0 && strong(etag)
+                        && !header(head, "Cache-Control").toLowerCase(java.util.Locale.ROOT).contains("no-store")) {
+                    remember(key, new Metadata(total, etag, mime, modified));
+                }
             }
         } catch (IOException ignored) {
             // Initial connection failure can select relay before any bytes are emitted.
@@ -130,7 +197,7 @@ public final class RangeRelay {
             output.put("Content-Range", "bytes " + start + "-" + end + "/" + total);
         }
         return new Reply(status, mime,
-                new RepairStream(direct, relay, headers, etag, total, start, end),
+                new RepairStream(direct, relay, headers, etag, total, start, end, key),
                 output, end - start + 1);
     }
 
@@ -190,13 +257,16 @@ public final class RangeRelay {
         private final Map<String, String> headers;
         private final long total, end;
         private long position;
-        private boolean repaired;
+        private boolean repaired, directRetried;
+        private long lastRead;
+        private final MetadataKey key;
         private volatile boolean closed;
         private volatile HttpURLConnection connection;
         private InputStream stream;
+        private final byte[] singleByte = new byte[1];
 
         RepairStream(String direct, String relay, Map<String, String> headers,
-                     String etag, long total, long start, long end) {
+                     String etag, long total, long start, long end, MetadataKey key) {
             this.direct = direct;
             this.relay = relay;
             this.headers = new HashMap<>(headers);
@@ -204,6 +274,7 @@ public final class RangeRelay {
             this.total = total;
             this.position = start;
             this.end = end;
+            this.key = key;
         }
 
         private void start(boolean viaRelay) throws IOException {
@@ -213,10 +284,15 @@ public final class RangeRelay {
             request.put("Range", "bytes=" + position + "-" + end);
             request.put("If-Range", etag);
             HttpURLConnection next = connect(viaRelay ? relay : direct, "GET", request);
+            if (!viaRelay && directRetried) {
+                next.setConnectTimeout(1500);
+                next.setReadTimeout(1500);
+            }
             connection = next;
             try {
                 if (closed) throw new IOException("Media request closed");
                 int status = next.getResponseCode();
+                if (status >= 500) throw new IOException("Media upstream temporarily unavailable");
                 Matcher bounds = BOUNDS.matcher(header(next, "Content-Range"));
                 String encoding = header(next, "Content-Encoding");
                 boolean partial = status == 206 && bounds.matches()
@@ -228,11 +304,14 @@ public final class RangeRelay {
                 if ((!partial && !whole)
                         || !etag.equals(header(next, "ETag"))
                         || !encoding.isEmpty() && !encoding.equalsIgnoreCase("identity")) {
-                    throw new IOException("Media object or byte range changed");
+                    throw new InvalidMediaException();
                 }
                 stream = next.getInputStream();
                 if (closed) throw new IOException("Media request closed");
-            } catch (IOException | RuntimeException error) {
+            } catch (IOException error) {
+                next.disconnect();
+                throw error;
+            } catch (RuntimeException error) {
                 next.disconnect();
                 throw new IOException("Media range unavailable", error);
             }
@@ -253,30 +332,43 @@ public final class RangeRelay {
             }
             if (length == 0) return 0;
             if (position > end) { disconnect(); return -1; }
+            // No pause callback is required: reconnect only when the consumer reads again.
+            if (stream != null && System.nanoTime() - lastRead >= IDLE_REOPEN) disconnect();
             for (;;) {
                 try {
                     if (stream == null) start(repaired);
-                    int count = stream.read(buffer, offset, (int) Math.min(length, end - position + 1));
+                    InputStream active = stream;
+                    if (closed || active == null) throw new IOException("Media request closed");
+                    int count = active.read(buffer, offset, (int) Math.min(length, end - position + 1));
                     if (closed) throw new IOException("Media request closed");
                     if (count < 0) throw new EOFException("Media upstream truncated response");
                     position += count;
+                    lastRead = System.nanoTime();
                     return count;
                 } catch (IOException error) {
                     disconnect();
+                    forget(key);
                     if (closed || repaired) throw error;
+                    if (!directRetried && !(error instanceof InvalidMediaException)) {
+                        directRetried = true;
+                        continue;
+                    }
                     repaired = true;
                 }
             }
         }
 
         @Override public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            return read(buffer, 0, 1) < 0 ? -1 : buffer[0] & 255;
+            return read(singleByte, 0, 1) < 0 ? -1 : singleByte[0] & 255;
         }
 
         @Override public void close() {
             closed = true;
             disconnect();
         }
+    }
+
+    private static final class InvalidMediaException extends IOException {
+        InvalidMediaException() { super("Media object or byte range changed"); }
     }
 }

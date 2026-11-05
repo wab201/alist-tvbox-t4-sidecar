@@ -9,6 +9,7 @@ class ClientCORSMiddleware:
             app, allow_origins=["*"], allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
             allow_headers=["*"], expose_headers=[
                 "X-T4-Trace-ID", "Accept-Ranges", "Content-Range", "Content-Length",
+                "Link",
             ],
         )
 
@@ -26,6 +27,10 @@ class ClientCORSMiddleware:
             return parts[1] in {"home", "category", "search", "detail", "play", "action"}
         if parts[:1] == ["fm"]:
             return len(parts) == 3 or len(parts) == 5 and parts[3] == "api"
+        if len(parts) == 3 and parts[0] == "acceleration":
+            return parts[2] in {"component.json", "client.jar", "ready", "disable"}
+        if len(parts) == 4 and parts[0] == "acceleration":
+            return parts[2] == "plans"
         return len(parts) == 2 and parts[0] in {"media", "images", "proxy"}
 
     async def __call__(self, scope, receive, send):

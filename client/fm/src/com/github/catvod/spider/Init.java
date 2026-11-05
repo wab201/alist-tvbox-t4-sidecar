@@ -29,6 +29,7 @@ public final class Init {
                 loaded.load(input);
             }
             settings = loaded;
+            RangeRelay.clearMetadata();
             Thread thread = new Thread(() -> probe(loaded), "t4-capability-probe");
             thread.setDaemon(true);
             thread.start();

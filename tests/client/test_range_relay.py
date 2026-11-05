@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 import zipfile
 
 import pytest
@@ -95,20 +96,32 @@ def origin():
             pass
 
         def do_HEAD(self):
-            self.handle_media(head=True)
+            try:
+                self.handle_media(head=True)
+            except OSError:
+                pass
 
         def do_GET(self):
             self.handle_media(head=False)
 
         def handle_media(self, head):
-            route = self.path.strip("/")
+            route = self.path.split("?", 1)[0].strip("/")
             mode = modes[route]
             events.append({"route": route, "method": self.command,
                            "range": self.headers.get("Range", ""),
                            "agent": self.headers.get("User-Agent", ""),
-                           "if_range": self.headers.get("If-Range", "")})
+                           "if_range": self.headers.get("If-Range", ""),
+                           "connection": self.client_address[1], "started": time.monotonic()})
+            if head and mode == "slow-head":
+                time.sleep(2.5)
             if mode == "denied" or head and mode == "nohead":
                 self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            requests = [item for item in events if item["route"] == route and item["method"] == "GET"]
+            if not head and mode == "unavailable-once" and len(requests) == 1:
+                self.send_response(503)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -123,24 +136,34 @@ def origin():
             self.send_response(status)
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(end - start + 1))
-            self.send_header("Connection", "close")
+            self.send_header("Connection", "keep-alive" if mode == "keepalive" else "close")
             self.send_header("Accept-Ranges", "bytes")
             if mode not in {"noetag", "noetag-truncate"}:
-                self.send_header("ETag", '"different"' if mode == "changed" else '"same-file"')
+                changed = mode == "changed" or mode == "change-later" and len(requests) > 1
+                self.send_header("ETag", '"different"' if changed else '"same-file"')
+            if mode == "no-store":
+                self.send_header("Cache-Control", "private, no-store")
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{len(CONTENT)}")
             self.end_headers()
             if not head:
                 content = CONTENT[start:end + 1]
-                requests = [item for item in events if item["route"] == route and item["method"] == "GET"]
-                if mode in {"truncate", "noetag-truncate"} or mode == "truncate-once" and len(requests) == 1:
+                if mode in {"truncate", "noetag-truncate", "stall"} or mode in {
+                    "truncate-once", "stall-once",
+                } and len(requests) == 1 or mode == "truncate-twice" and len(requests) <= 2 or (
+                    mode == "stall-later" and len(requests) > 1
+                ):
                     content = content[:8192]
                 try:
                     self.wfile.write(content)
                     self.wfile.flush()
+                    if mode == "stall" or mode == "stall-once" and len(requests) == 1 or (
+                        mode == "stall-later" and len(requests) > 1
+                    ):
+                        time.sleep(6)
                 except (ConnectionError, OSError):
                     pass
-            self.close_connection = True
+            self.close_connection = mode != "keepalive"
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -185,9 +208,36 @@ def test_truncated_direct_is_repaired_from_exact_missing_byte(java, origin):
     assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
     relay = [event for event in origin[2] if event["route"] == "relay"]
     assert len(relay) == 1
-    assert relay[0]["range"] == f"bytes=8192-{len(CONTENT) - 1}"
+    assert relay[0]["range"] == f"bytes=16384-{len(CONTENT) - 1}"
     assert relay[0]["if_range"] == '"same-file"'
     assert relay[0]["agent"] != "signed-agent"
+
+
+def test_successful_head_and_get_preserve_existing_connection_reuse(java, origin):
+    origin[1]["direct"] = "keepalive"
+    response = run(java, origin)
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    assert [event["method"] for event in origin[2]] == ["HEAD", "GET"]
+    assert len({event["connection"] for event in origin[2]}) == 1
+
+
+def test_single_byte_consumer_preserves_exact_range(java, origin):
+    response = run(java, origin, range="bytes=12345-20536", action="single-byte")
+    assert not response["failed"] and response["bytes"] == 8192
+    assert response["hash"] == hashlib.sha256(CONTENT[12345:20537]).hexdigest()
+    assert not any(event["route"] == "relay" for event in origin[2])
+
+
+def test_slow_optional_head_does_not_delay_a_healthy_get(java, origin):
+    origin[1]["direct"] = "slow-head"
+    response = run(java, origin)
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    head, get = origin[2]
+    assert head["method"] == "HEAD" and get["method"] == "GET"
+    assert get["started"] - head["started"] < 2
+    assert not any(event["route"] == "relay" for event in origin[2])
 
 
 @pytest.mark.parametrize("mode", ["changed", "ignore-range", "denied", "truncate"])
@@ -195,7 +245,7 @@ def test_invalid_or_failing_repair_never_splices_wrong_bytes_or_retries_forever(
     origin[1].update(direct="truncate", relay=mode)
     response = run(java, origin)
     assert response["failed"]
-    assert response["bytes"] <= 16384
+    assert response["bytes"] <= 24576
     assert len([event for event in origin[2] if event["route"] == "relay"]) == 1
 
 
@@ -230,7 +280,7 @@ def test_java_repair_through_real_sidecar_stream_preserves_object_headers_and_by
     from tests.unit.test_media_disconnect import serving
 
     base, modes, events = origin
-    modes["direct"] = "truncate-once"
+    modes["direct"] = "truncate-twice"
     app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry())
     with serving(app) as gateway:
         relay = app.state.playback.client_relay(base + "/direct", {
@@ -243,8 +293,8 @@ def test_java_repair_through_real_sidecar_stream_preserves_object_headers_and_by
         assert lines[2] == hashlib.sha256(CONTENT).hexdigest()
         assert lines[3] == "false"
         gets = [item for item in events if item["method"] == "GET"]
-        assert len(gets) == 2
-        assert gets[-1]["range"] == f"bytes=8192-{len(CONTENT) - 1}"
+        assert gets[-1]["range"] == f"bytes=16384-{len(CONTENT) - 1}"
+        assert len(gets) == 3
         assert all(item["agent"] == "signed-agent" for item in gets)
 
 
@@ -270,3 +320,97 @@ def test_unsatisfiable_ranges_are_explicit_without_downloading(java, origin, ran
     assert response["status"] == 416 and response["bytes"] == 0
     assert response["range"] == f"bytes */{len(CONTENT)}"
     assert len(origin[2]) == 1
+
+
+@pytest.mark.parametrize("mode", ["truncate-once", "stall-once"])
+def test_transient_failure_reconnects_direct_at_missing_byte_before_server(java, origin, mode):
+    origin[1]["direct"] = mode
+    response = run(java, origin)
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    gets = [event for event in origin[2] if event["method"] == "GET"]
+    assert [event["route"] for event in gets] == ["direct", "direct"]
+    assert gets[-1]["range"] == f"bytes=8192-{len(CONTENT) - 1}"
+    assert all(event["if_range"] == '"same-file"' for event in gets)
+
+
+def test_pause_resume_reopens_direct_without_server_or_duplicate_bytes(java, origin):
+    origin[1]["direct"] = "truncate-once"
+    response = run(java, origin, action="pause")
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    gets = [event for event in origin[2] if event["method"] == "GET"]
+    assert [event["route"] for event in gets] == ["direct", "direct"]
+    assert gets[-1]["range"] == f"bytes=8192-{len(CONTENT) - 1}"
+    assert gets[-1]["started"] - gets[0]["started"] >= 15
+
+
+def test_transient_upstream_503_does_not_force_media_through_server(java, origin):
+    origin[1]["direct"] = "unavailable-once"
+    response = run(java, origin)
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    assert [event["route"] for event in origin[2] if event["method"] == "GET"] == [
+        "direct", "direct",
+    ]
+
+
+def test_repeated_stall_has_short_direct_retry_before_exact_server_repair(java, origin):
+    origin[1]["direct"] = "stall"
+    response = run(java, origin)
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT).hexdigest()
+    gets = [event for event in origin[2] if event["method"] == "GET"]
+    assert [event["route"] for event in gets] == ["direct", "direct", "relay"]
+    assert gets[-1]["range"] == f"bytes=16384-{len(CONTENT) - 1}"
+    assert gets[-1]["started"] - gets[0]["started"] < 9
+
+
+def test_cancel_while_reading_stalled_connection_does_not_restart_or_relay(java, origin):
+    origin[1]["direct"] = "stall-later"
+    response = run(java, origin, action="cancel-blocked")
+    assert not response["failed"]
+    assert [event["route"] for event in origin[2] if event["method"] == "GET"] == [
+        "direct", "direct",
+    ]
+
+
+def test_cached_metadata_never_mixes_changed_object_and_is_invalidated(java, origin):
+    origin[1].update(direct="change-later", relay="changed")
+    response = run(java, origin, range="bytes=0-8191", action="cache-change")
+    assert not response["failed"]
+    assert response["hash"] == hashlib.sha256(CONTENT[:8192]).hexdigest()
+    events = origin[2]
+    assert len([event for event in events if event["method"] == "HEAD"]) == 2
+    assert len([event for event in events if event["route"] == "relay"]) == 1
+
+
+def test_metadata_cache_expires_after_short_ttl(java, origin):
+    result = subprocess.run(
+        java + [origin[0] + "/direct", origin[0] + "/relay", "bytes=0-8191", "", "cache-expiry"],
+        capture_output=True, text=True, timeout=40,
+    )
+    assert result.returncode == 0, result.stderr
+    assert len([event for event in origin[2] if event["method"] == "HEAD"]) == 2
+
+
+@pytest.mark.parametrize("mode,action,heads", [
+    ("normal", "seek", 1), ("no-store", "seek", 4), ("normal", "seek-headers", 4),
+])
+def test_forward_backward_and_suffix_seeks_reuse_only_matching_metadata(
+    java, origin, mode, action, heads,
+):
+    origin[1]["direct"] = mode
+    result = subprocess.run(java + [origin[0] + "/direct", origin[0] + "/relay",
+                                   "bytes=0-8191", "", action],
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[3] == "false"
+    expected = [CONTENT[100000:108192], CONTENT[:8192], CONTENT[-8192:]]
+    assert result.stdout.splitlines()[5:] == [
+        f"8192:{hashlib.sha256(part).hexdigest()}" for part in expected
+    ]
+    events = origin[2]
+    assert len([event for event in events if event["method"] == "HEAD"]) == heads
+    assert len([event for event in events if event["method"] == "GET"]) == 4
+    assert not any(event["route"] == "relay" for event in events)

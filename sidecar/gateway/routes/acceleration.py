@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import zipfile
+import zlib
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from sidecar.client_acceleration import ClientAcceleration
+from sidecar.diagnostics import record
 
 
 class CapabilityProof(BaseModel):
@@ -21,11 +24,27 @@ def build_acceleration_router(acceleration: ClientAcceleration) -> APIRouter:
     async def status():
         return acceleration.summary()
 
+    @router.get("/t4/acceleration/{identity}/component.json")
+    async def component(identity: str, response: Response):
+        value = acceleration.component(identity)
+        if value is None:
+            raise HTTPException(410, "可选组件不可用，原订阅继续使用 T4")
+        response.headers["Cache-Control"] = "no-store"
+        return value
+
     @router.get("/t4/acceleration/{identity}/client.jar")
     async def artifact(identity: str):
-        content = await asyncio.to_thread(acceleration.artifact, identity)
+        try:
+            content = await asyncio.to_thread(acceleration.artifact, identity)
+        except (
+            OSError, zipfile.BadZipFile, KeyError, ValueError,
+            zlib.error, RuntimeError, EOFError,
+        ) as exc:
+            record("client.component_failed", error=type(exc).__name__)
+            content = None
         if content is None:
-            raise HTTPException(410, "客户端探测已过期，请刷新订阅")
+            acceleration.disable(identity)
+            raise HTTPException(410, "可选组件不可用，原订阅继续使用 T4")
         return Response(content, media_type="application/java-archive",
                         headers={"Cache-Control": "no-store"})
 
