@@ -118,6 +118,7 @@
   <header>
     <h1>T4 Sidecar 管理台</h1>
     <span id="health" class="badge">连接中</span>
+    <span id="media-engine" class="badge"></span>
   </header>
   <div id="status" class="status muted" role="status" aria-live="polite">正在加载</div>
   <section aria-labelledby="subscription-heading">
@@ -1060,6 +1061,7 @@
     try {
       const health = await request("/t4/health");
       $("#health").textContent = `${health.status} · ${health.version}`;
+      $("#media-engine").textContent = health.media_engine === "rust" ? "媒体引擎：Rust（实验）" : "媒体引擎：Python";
       await loadAll();
     } catch (error) { $("#health").textContent = "不可用"; setStatus(error.message, "error"); }
   })();

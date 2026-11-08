@@ -43,7 +43,8 @@ class MediaResponse(ManagedStreamingResponse):
                     asset, request.method, dict(request.headers), redirect=True,
                 )
                 upstream = self.upstream
-                names = ["content-type", "content-length", "content-range", "accept-ranges"]
+                names = ["content-type", "content-length", "content-range", "accept-ranges",
+                         "retry-after"]
                 if asset.kind != "segment":
                     names += ["etag", "last-modified", "content-encoding"]
                 if upstream.status_code == 302:
@@ -66,6 +67,7 @@ class MediaResponse(ManagedStreamingResponse):
 
                 self.body_iterator = chunks()
             try:
+                self.headers["X-T4-Media-Engine"] = "python"
                 await super().stream_response(send)
             except httpx.HTTPError as exc:
                 self.reason = "upstream_error"
@@ -76,6 +78,7 @@ class MediaResponse(ManagedStreamingResponse):
             if self.reason == "upstream_error":
                 raise  # Headers are already sent; a truncated stream must remain a failure.
             self.reason = "upstream_error"
+            self.status_code = 502
             if asset.kind == "hls":
                 record("media.hls_failed", parent_trace=asset.trace, error=type(exc).__name__)
                 raise HTTPException(502, detail={

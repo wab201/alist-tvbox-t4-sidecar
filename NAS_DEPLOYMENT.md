@@ -373,6 +373,53 @@ JAR 内 `t4-build.json` 记录输入源码哈希，CI 从源码重建后再运�
 反代无需为增强另建订阅，只需按现有规则转发 `/t4/`；丢失 `Link` 头时保留标准 T4。
 只有适配了本项目发现扩展的客户端才会加载组件，不代表原版 FM 会自动加载。
 
+## 媒体引擎选择
+
+自 0.3.17 起发布镜像同时包含 Python 和 Rust。默认 `python`，不会在升级时自动切换。
+在现有 `.env` 中设置一行：
+
+```dotenv
+T4_MEDIA_ENGINE=rust
+```
+
+然后执行 `docker compose up -d --no-deps --force-recreate t4-sidecar`。
+恢复默认时改为 `T4_MEDIA_ENGINE=python` 并执行同一命令。已有 Compose 使用
+`env_file: .env` 即可读取；若 `environment` 中另设了同名变量，以其值为准。
+升级和切换应在无播放任务时进行，重建容器会中断正在进行的连接。
+订阅 URL、公开端口、AT 配置和原数据卷均不需要改变。
+
+管理台顶部和 `/t4/health` 的 `media_engine` 显示选择值。Rust 模式下：
+
+- Rust 作为外层 HTTP 入口，Python 仅监听容器内部回环地址，不公开第二个端口。
+- 只有已登记、无需改写且不参与直连分流的 HTTP(S) 二进制媒体由 Rust 交付。
+  HLS、PNG/TS 等特殊分片、内联清单、302 直连策略、Python 会话或环境代理依赖仍走 Python。
+- 保留 GET/HEAD、Range/If-Range、自定义上游头、重定向及错误状态；不重试已输出正文的流。
+- 不提供任意 URL 转发入口、不增加客户端 Token、不改变爬虫和解码职责。
+- 两条路径的结束事件进入原脱敏日志；Rust 使用有界异步日志队列，过载允许丢弃日志，
+  不为日志阻塞媒体传输。日志不是无损计量，不能仅凭其推导所有客户端的整体性能。
+- Rust 子进程退出时启动器退出，由现有 `restart: unless-stopped` 重启；缺二进制或非法配置
+  明确启动失败，不伪装成 Rust 已启用。不满意时显式改回 Python。
+
+源码构建仍使用仓库 Dockerfile，Rust 多阶段构建，不在最终镜像保留编译器。
+直接从源码启动使用 `python -m sidecar.serve`；Rust 模式先执行
+`cargo build --manifest-path rust/media-relay/Cargo.toml --release --locked`，再通过
+`T4_RUST_RELAY_BIN` 指定生成的二进制绝对路径。构建需要 Rust 1.99.1；Linux 还需
+`pkg-config` 和 OpenSSL 开发库。旧的直接 `uvicorn` 命令不会启动 Rust 入口。
+公开镜像当前为 `linux/amd64`，其他架构需自行构建验证。
+
+**这是可选实验模块，不是性能全面优于 Python 的承诺。** 部分高并发首包及吞吐退化
+仍保留；后续依据用户授权导出的日志继续优化，不自动上传遥测。
+
+## 性能验证边界
+
+已有测试仍出现高并发首包或吞吐退化，因此 Python 保持默认；Rust 用于显式试用和日志观察。
+独立代理节省 CPU/内存，不等于包含 Python 控制面的整个容器同比节省。
+HTTP/字节合同通过也不等于所有客户端完成了起播、拖动、暂停和切集长播验收。
+
+开发回归入口为 `cargo test --manifest-path rust/media-relay/Cargo.toml --release --locked`
+及 `python -m pytest tests/rust -q`。`scripts/` 中的隔离诊断工具不会随容器启动运行；
+竞速、套接字快路径和调度候选保持关闭。测试报告保存在忽略目录，不上传真实媒体地址。
+
 ## 部署排查
 
 ```bash

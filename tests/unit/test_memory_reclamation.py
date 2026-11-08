@@ -195,7 +195,7 @@ def test_disconnect_closes_body_generator_before_returning():
         response = ManagedStreamingResponse(parent_trace="", stage="media")
         response.body_iterator = chunks()
         await response({
-            "type": "http", "asgi": {"spec_version": "2.4"},
+            "type": "http", "method": "GET", "asgi": {"spec_version": "2.4"},
         }, receive, send)
         assert closed.is_set()
     asyncio.run(run())

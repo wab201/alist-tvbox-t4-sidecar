@@ -29,6 +29,7 @@ _FIELDS = {
     "workers", "retained_workers", "proxy_workers", "busy_workers", "gate_workers",
     "interval_seconds", "version",
     "profile", "client",
+    "engine", "first_body_ms", "upstream_headers_ms", "control_ms",
 }
 _LABEL = re.compile(r"^[\w.:-]{1,100}$", re.UNICODE)
 _MIMES = {

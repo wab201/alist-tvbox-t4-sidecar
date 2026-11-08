@@ -18,6 +18,8 @@ class ManagedStreamingResponse(StreamingResponse):
         self.upstream: httpx.Response | None = None
         self.count = 0
         self.reason = "cancelled"
+        self.first_body_ms = None
+        self.started = 0.0
 
     async def stream_response(self, send):
         iterator = self.body_iterator
@@ -25,6 +27,8 @@ class ManagedStreamingResponse(StreamingResponse):
         async def tracked():
             try:
                 async for chunk in iterator:
+                    if chunk and self.first_body_ms is None:
+                        self.first_body_ms = round((time.monotonic() - self.started) * 1000, 3)
                     yield chunk
                 self.reason = "complete"
             finally:
@@ -38,6 +42,7 @@ class ManagedStreamingResponse(StreamingResponse):
 
     async def __call__(self, scope, receive, send):
         start = time.monotonic()
+        self.started = start
         failure = None
         try:
             # ASGI 2.4+ also needs a listener to cancel stalled reads before a send.
@@ -74,5 +79,8 @@ class ManagedStreamingResponse(StreamingResponse):
             finally:
                 elapsed = time.monotonic() - start
                 record(self.stage + ".closed", parent_trace=self.parent_trace, bytes=self.count,
+                       engine="python", first_body_ms=self.first_body_ms,
+                       status=self.status_code, method=scope["method"],
+                       range=any(name == b"range" for name, _ in scope.get("headers", [])),
                        reason=self.reason, duration_ms=round(elapsed * 1000),
                        mib_per_s=round(self.count / (1024 ** 2) / max(elapsed, .001), 3))

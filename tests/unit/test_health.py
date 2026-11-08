@@ -23,6 +23,7 @@ def test_health_returns_stable_public_status() -> None:
         "status": "ok",
         "version": "test-version",
         "worker": {"status": "not_started"},
+        "media_engine": "python",
     }
 
 

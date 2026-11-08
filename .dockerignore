@@ -3,5 +3,11 @@
 !pyproject.toml
 !sidecar/
 !sidecar/**
+!rust/
+!rust/media-relay/
+!rust/media-relay/Cargo.toml
+!rust/media-relay/Cargo.lock
+!rust/media-relay/src/
+!rust/media-relay/src/**
 **/__pycache__/
 **/*.py[cod]

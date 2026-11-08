@@ -22,6 +22,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Build optional Rust media module
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          cargo +1.99.1 test --manifest-path rust/media-relay/Cargo.toml --release --locked -j 2
+          cargo +1.99.1 build --manifest-path rust/media-relay/Cargo.toml --release --locked -j 2
+
       - name: Set up client helper build
         uses: actions/setup-java@v4
         with:
@@ -45,6 +51,7 @@ jobs:
           T4_PLUGIN_DIR: ${{ runner.temp }}/t4-plugins
           T4_LOG_FILE: ${{ runner.temp }}/t4-logs/playback.jsonl
           T4_COMPATIBILITY_REPORT: ${{ runner.temp }}/t4-reports/compatibility.json
+          T4_RUST_RELAY_BIN: ${{ github.workspace }}/rust/media-relay/target/release/t4-media-relay
         run: |
           python -m pip install ".[test]"
           python -m pip check
@@ -122,6 +129,17 @@ jobs:
           curl --fail --silent http://127.0.0.1:18765/t4/assets/icons/save.svg > /dev/null
           curl --fail --silent http://127.0.0.1:18765/t4/config.json | python -c \
             "import json,sys; assert json.load(sys.stdin)=={'sites':[]}"
+          docker rm -f t4-image-smoke
+          docker run -d --name t4-image-smoke -e T4_MEDIA_ENGINE=rust -p 127.0.0.1:18765:8765 "$tag"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18765/t4/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18765/t4/health | python -c \
+            "import json,os,sys; data=json.load(sys.stdin); assert data['version']==os.environ['EXPECTED_VERSION'] and data['media_engine']=='rust'"
+          curl --fail --silent http://127.0.0.1:18765/t4/config.json | python -c \
+            "import json,sys; assert json.load(sys.stdin)=={'sites':[]}"
+          curl --fail --silent http://127.0.0.1:18765/t4/assets/icons/save.svg > /dev/null
 
       - name: Upload NAS deployment archive
         uses: actions/upload-artifact@v4

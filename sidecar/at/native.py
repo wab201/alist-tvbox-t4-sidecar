@@ -243,6 +243,8 @@ class NativeAtClient:
                     ("帐号", "provider_account"),
                     ("账号", "provider_account"),
                     ("找不到", "resource_not_found"),
+                    ("not found", "resource_not_found"),
+                    ("Not found", "resource_not_found"),
                     ("失效", "share_unavailable"),
                     ("不存在", "resource_not_found"),
                     ("过期", "expired"),

@@ -495,6 +495,8 @@ def test_telegram_published_video_does_not_enter_cloud_play(api):
     ("Invalid share link format https://private.example/secret", "invalid_share"),
     ("找不到迅雷云盘帐号 private-secret", "provider_account"),
     ("链接已失效 private-secret", "share_unavailable"),
+    ("object not found private-secret", "resource_not_found"),
+    ("Not found: private-secret", "resource_not_found"),
     ("https://private.example/secret", "http_status"),
 ])
 @pytest.mark.parametrize("field", ["message", "detail"])

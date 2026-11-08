@@ -9,7 +9,7 @@ class ClientCORSMiddleware:
             app, allow_origins=["*"], allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
             allow_headers=["*"], expose_headers=[
                 "X-T4-Trace-ID", "Accept-Ranges", "Content-Range", "Content-Length",
-                "Link",
+                "Link", "X-T4-Media-Engine",
             ],
         )
 

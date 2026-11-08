@@ -26,6 +26,11 @@ class Settings:
     compatibility_report: str | None = None
     cloud_playback: str = "direct"
     at_internal_url: str | None = None
+    media_engine: str = "python"
+
+    def __post_init__(self) -> None:
+        if self.media_engine not in {"python", "rust"}:
+            raise ValueError("T4_MEDIA_ENGINE must be python or rust")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -45,4 +50,5 @@ class Settings:
             compatibility_report=os.getenv("T4_COMPATIBILITY_REPORT") or None,
             cloud_playback=os.getenv("T4_CLOUD_PLAYBACK_MODE", "direct"),
             at_internal_url=os.getenv("ALIST_TVBOX_INTERNAL_URL") or None,
+            media_engine=os.getenv("T4_MEDIA_ENGINE", "python").strip().lower(),
         )

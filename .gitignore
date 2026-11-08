@@ -24,6 +24,7 @@ logs/
 coverage.xml
 htmlcov/
 tests/reports/
+rust/*/target/
 
 # IDE and OS files
 .idea/

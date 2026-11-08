@@ -99,3 +99,32 @@ def test_proxy_does_not_invent_range_metadata_missing_from_upstream(tmp_path):
         assert response.status_code == 206
         assert "Content-Range" not in response.headers
         assert "Accept-Ranges" not in response.headers
+
+
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("retry_after", ["17", "Fri, 06 Nov 2026 12:00:00 GMT"])
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_media_preserves_upstream_retry_after_without_retrying(tmp_path, status, retry_after, method):
+    calls = []
+    def upstream(request):
+        calls.append(request.method)
+        return httpx.Response(status, stream=httpx.ByteStream(
+            b"fixture-error" if method == "GET" else b"",
+        ), headers={"Retry-After": retry_after, "Content-Length": "13"})
+
+    app = create_app(Settings(plugin_dir=str(tmp_path)), SourceRegistry())
+    bridge = app.state.playback
+    bridge.client.close()
+    transport = httpx.MockTransport(upstream)
+    bridge.client = httpx.Client(transport=transport)
+    bridge.media_client = httpx.AsyncClient(transport=transport)
+    key = bridge._put(MediaAsset(
+        None, "https://media.example/file", {}, "application/octet-stream",
+        "fixture-trace", time.monotonic(),
+    ), ".mp4")
+    with TestClient(app) as client:
+        response = client.request(method, "/t4/media/" + key)
+        assert response.status_code == status
+        assert response.headers["Retry-After"] == retry_after
+        assert response.content == (b"fixture-error" if method == "GET" else b"")
+    assert calls == [method]

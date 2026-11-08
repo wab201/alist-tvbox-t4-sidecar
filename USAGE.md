@@ -23,6 +23,16 @@
 
 ## 客户端可选增强
 
+服务端媒体引擎与客户端增强是两件事。自 0.3.17 起，管理台顶部显示当前
+Python 或 Rust 媒体引擎；切换方式见[部署指南](NAS_DEPLOYMENT.md#媒体引擎选择)。
+Rust 模式仍可能由 Python 处理 HLS、特殊分片、直连分流或依赖 Python 会话的请求。
+在“播放链路诊断”打开实时日志或导出日志，按 `media.closed` 的 `engine`、
+`first_body_ms`、`duration_ms`、`bytes`、`mib_per_s` 和 `reason` 检查实际路径。
+首包时间是对应服务端交付路径的观测值，不等于客户端起播时间；吞吐受客户端读取速度影响。
+Rust 的 `control_ms` 单列内部交接耗时，并包含在该请求首包和总耗时内。
+Rust 引擎状态 `/t4/api/diagnostics/media-engine` 提供活跃流、累计字节和日志丢弃计数。
+日志不记录签名网址、Cookie 或鉴权头。选用 Rust 不代表保证更快；不满意可随时回切 Python。
+
 **自 0.3.15 起，订阅正文与可选组件分离。**
 
 每个出口只有一个订阅地址，默认仍是 `http://NAS_IP:8765/t4/config.json`。

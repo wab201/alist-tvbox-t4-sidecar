@@ -21,6 +21,7 @@ services:
       T4_COMPATIBILITY_REPORT: /data/reports/compatibility-latest.json
       T4_SUBSCRIPTION_CACHE_TTL: ${T4_SUBSCRIPTION_CACHE_TTL:-30}
       T4_UPLOAD_MAX_BYTES: ${T4_UPLOAD_MAX_BYTES:-2000000}
+      T4_MEDIA_ENGINE: ${T4_MEDIA_ENGINE:-python}
     ports:
       - "${T4_PORT:-8765}:8765"
     volumes:
