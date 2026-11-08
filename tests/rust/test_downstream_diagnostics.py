@@ -213,6 +213,7 @@ def test_fresh_client_handshake_cannot_be_silently_assumed_without_syn():
 
 @pytest.mark.skipif(sys.platform != "linux" or not binary_path().is_file(),
                     reason="requires the isolated Linux diagnostic environment")
+@pytest.mark.requires_packet_capture
 @pytest.mark.parametrize("mode", ["python", "rust"])
 @pytest.mark.parametrize("collector", [FirstBodyWireProfile, ProcessFirstBodyWireProfile])
 def test_kernel_first_body_and_original_consumer_keep_all_media_bytes(mode, collector):
@@ -235,6 +236,7 @@ def test_kernel_first_body_and_original_consumer_keep_all_media_bytes(mode, coll
 
 @pytest.mark.skipif(sys.platform != "linux" or not binary_path().is_file(),
                     reason="requires the isolated Linux diagnostic environment")
+@pytest.mark.requires_packet_capture
 @pytest.mark.parametrize("mode", ["python", "rust"])
 def test_shared_downstream_measurement_closes_original_request_timelines(mode):
     with experiment(trace=True, profile=True) as relays:

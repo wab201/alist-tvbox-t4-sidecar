@@ -65,6 +65,7 @@ def test_packet_parser_retains_only_synthetic_metadata():
 
 @pytest.mark.skipif(sys.platform != "linux" or not binary_path().is_file(),
                     reason="requires the isolated Linux diagnostic environment")
+@pytest.mark.requires_packet_capture
 def test_kernel_filter_captures_request_timestamps_without_body_payloads():
     with experiment() as relays:
         url = relays["origin"].url

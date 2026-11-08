@@ -36,6 +36,9 @@ testpaths = ["tests"]
 norecursedirs = ["reports", ".*", "build", "dist", "node_modules", "venv", "*.egg"]
 pythonpath = ["."]
 addopts = "-q"
+markers = [
+    "requires_packet_capture: Linux diagnostic tests requiring CAP_NET_RAW",
+]
 
 [tool.setuptools.packages.find]
 include = ["sidecar*"]
