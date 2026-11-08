@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--origin", required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--engine", required=True)
+    parser.add_argument("--standalone-python", action="store_true")
     args = parser.parse_args()
     settings = Settings.from_env()
     app = create_app(settings, SourceRegistry())
@@ -59,7 +60,7 @@ def main():
             "X-Echo-Private": request.headers.get("x-t4-relay-internal", "absent"),
         })
 
-    if args.engine == "rust":
+    if not args.standalone_python:
         raise SystemExit(asyncio.run(serve_rust(app, host="127.0.0.1", port=args.port,
                                               binary=str(binary_path()))))
     uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)

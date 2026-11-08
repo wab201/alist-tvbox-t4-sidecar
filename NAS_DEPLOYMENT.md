@@ -375,33 +375,35 @@ JAR 内 `t4-build.json` 记录输入源码哈希，CI 从源码重建后再运�
 
 ## 媒体引擎选择
 
-自 0.3.17 起发布镜像同时包含 Python 和 Rust。默认 `python`，不会在升级时自动切换。
-在现有 `.env` 中设置一行：
+自 0.3.18 起支持在 Web 中热切换。首次升级镜像仍会重建容器，应在没有播放任务时进行；
+升级完成后，打开管理台“媒体引擎”，点击 Python 或 Rust 即可，不需要再次重建或重启。
+进行中的 HTTP 流保留原引擎，新请求按新选择处理。订阅 URL、公开端口和 AT 配置均不变。
+
+`T4_MEDIA_ENGINE` 仅作为没有保存过选择时的默认值，例如：
 
 ```dotenv
 T4_MEDIA_ENGINE=rust
 ```
 
-然后执行 `docker compose up -d --no-deps --force-recreate t4-sidecar`。
-恢复默认时改为 `T4_MEDIA_ENGINE=python` 并执行同一命令。已有 Compose 使用
-`env_file: .env` 即可读取；若 `environment` 中另设了同名变量，以其值为准。
-升级和切换应在无播放任务时进行，重建容器会中断正在进行的连接。
-订阅 URL、公开端口、AT 配置和原数据卷均不需要改变。
+Web 选择写入 `/data/plugins/media-engine.json`（自定义插件目录时随目录变化），优先于环境变量，
+重启后保留。不要用改环境变量覆盖已经保存的选择，直接在 Web 切换即可。
+保存失败时保留原配置并提示错误；Rust 未加载时 Web 禁用 Rust 选项。
 
-管理台顶部和 `/t4/health` 的 `media_engine` 显示选择值。Rust 模式下：
+管理台顶部和 `/t4/health` 的 `media_engine` 显示实际可用模式。热切换运行方式下：
 
-- Rust 作为外层 HTTP 入口，Python 仅监听容器内部回环地址，不公开第二个端口。
+- Rust 固定作为外层 HTTP 入口，Python 仅监听容器内部回环地址，不公开第二个端口。
+  选择 Python 时，媒体经入口转给 Python；因此存在一跳开销，不等同于旧版单进程 Python 基线。
 - 只有已登记、无需改写且不参与直连分流的 HTTP(S) 二进制媒体由 Rust 交付。
   HLS、PNG/TS 等特殊分片、内联清单、302 直连策略、Python 会话或环境代理依赖仍走 Python。
 - 保留 GET/HEAD、Range/If-Range、自定义上游头、重定向及错误状态；不重试已输出正文的流。
 - 不提供任意 URL 转发入口、不增加客户端 Token、不改变爬虫和解码职责。
-- 两条路径的结束事件进入原脱敏日志；Rust 使用有界异步日志队列，过载允许丢弃日志，
+- 两条路径的开始、进度和结束事件进入原脱敏日志；两侧使用有界异步日志队列，过载允许丢弃日志，
   不为日志阻塞媒体传输。日志不是无损计量，不能仅凭其推导所有客户端的整体性能。
-- Rust 子进程退出时启动器退出，由现有 `restart: unless-stopped` 重启；缺二进制或非法配置
-  明确启动失败，不伪装成 Rust 已启用。不满意时显式改回 Python。
+- Rust 子进程退出时启动器退出，由现有 `restart: unless-stopped` 重启。这类入口进程故障不是无损热切换。
+  源码启动缺二进制时仅提供 Python；非法配置明确失败，不伪装成 Rust 已启用。
 
 源码构建仍使用仓库 Dockerfile，Rust 多阶段构建，不在最终镜像保留编译器。
-直接从源码启动使用 `python -m sidecar.serve`；Rust 模式先执行
+直接从源码启动使用 `python -m sidecar.serve`；启用热切换先执行
 `cargo build --manifest-path rust/media-relay/Cargo.toml --release --locked`，再通过
 `T4_RUST_RELAY_BIN` 指定生成的二进制绝对路径。构建需要 Rust 1.99.1；Linux 还需
 `pkg-config` 和 OpenSSL 开发库。旧的直接 `uvicorn` 命令不会启动 Rust 入口。
@@ -411,6 +413,33 @@ T4_MEDIA_ENGINE=rust
 仍保留；后续依据用户授权导出的日志继续优化，不自动上传遥测。
 
 ## 性能验证边界
+
+本版是热切换与可观测性更新，性能无退化目标尚未通过。Windows 同代码回环对照采用
+16 并发、每请求 1 MiB、6 轮、源/网关/消费器独立进程，288 次测量请求字节与 Range 校验通过。
+热切换 Python 对直启 Python 的吞吐比为 0.555～0.942，P95 首字节增加 12.95～125.03 ms；
+Rust 吞吐比为 0.718～1.119，P95 差值为 -10.94～+81.12 ms。
+所有模式均开启日志，测试中两侧日志无丢弃或写入错误；该数据不覆盖不同设备、真实 CDN 或客户端解码。
+
+热切换的优势是在线比较、保留旧流和统一取证；代价是固定入口、控制面交接及日志记录。
+Rust 使用流式转发，但本项目未证明其在完整网关内稳定节省 CPU/内存或提高吞吐；
+历史独立代理测量不能替代本版完整路径。HLS、特殊分片、Python 会话/代理依赖的收益也不能从原样字节测试外推。
+
+没有测出“性能极限”：16 路不代表最大并发，1 MiB 短请求不代表长播吞吐，
+成功起播不代表快进、暂停恢复或多集长播全部稳定。服务器转发受最慢链路与共享资源约束，
+无法突破源站限速或 NAS 上行带宽，Python/Rust 双路径不会自动合成带宽。
+
+若优先移除额外入口成本，可在现有 Compose 的 `t4-sidecar` 服务下增加以下命令：
+
+```yaml
+services:
+  t4-sidecar:
+    command: ["uvicorn", "sidecar.gateway.main:app", "--host", "0.0.0.0", "--port", "8765", "--no-access-log"]
+```
+
+随后执行 `docker compose up -d --no-deps --force-recreate t4-sidecar`。
+这会重建容器实例并中断现有连接，但无需重新构建镜像；原数据卷和订阅保留。
+此模式只有 Python，Web 显示 Rust 未加载。恢复热切换时删除这项 `command` 覆盖并再次重建实例。
+优先在隔离环境用同媒体、同 Range、同客户端、交替顺序比较；需要回退旧版本时使用已保留的旧镜像与配置备份。
 
 已有测试仍出现高并发首包或吞吐退化，因此 Python 保持默认；Rust 用于显式试用和日志观察。
 独立代理节省 CPU/内存，不等于包含 Python 控制面的整个容器同比节省。
@@ -439,6 +468,8 @@ curl -fsS http://127.0.0.1:8765/t4/health
 `worker.retired` 为浏览实例退出，`worker.context_restored` 为旧卡片上下文恢复，
 `worker.memory_reclaimed` / `gateway.memory_reclaimed` 为内存整理。
 请求与播放事件保留 `trace_id`、状态、耗时等元信息，不记录完整地址、请求头或 Cookie。
-高频日志每 10 秒最多输出 100 条，并报告 `log.suppressed`，完整脱敏事件仍写入轮转文件。
+高频控制台日志每 10 秒最多输出 100 条，并报告 `log.suppressed`。磁盘输出独立于控制台限流，
+但有界异步队列满时允许丢弃输出，必须同时查看诊断包的两侧丢弃/写入错误计数。
+内存只保留最近 2000 条事件；文件约 2 MB 轮转、保留两份备份，不是无限或无损历史。
 默认 Compose 使用 Docker `local` 日志驱动，每份 10 MB、最多 3 份；升级已有部署时
 保留自定义日志驱动，没有配置的可按仓库 Compose 增加该设置后重建 Sidecar。

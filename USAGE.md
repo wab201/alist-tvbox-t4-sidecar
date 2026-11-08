@@ -21,17 +21,47 @@
 电视不能使用电脑的 `127.0.0.1` 或 `localhost`；远程使用时应通过公网反代地址打开管理页后再复制。
 插件新增、删除、重命名或排序后，在影视中刷新点播配置即可。
 
+## 媒体引擎与性能日志
+
+以下热切换功能自 0.3.18 提供，0.3.17 需先升级镜像。
+打开管理台的“媒体引擎”，选择 Python 或 Rust（实验），保存自动完成。
+新媒体请求按新选择处理；旧 HTTP 流继续完成，后续拖动、分片和下一集请求使用新设置。
+选择保存在数据卷，容器重启后保留。切换无需重建容器，也无需修改客户端订阅。
+源码启动没有加载 Rust 二进制时，Rust 选项不可用；直接用 `uvicorn` 启动只提供 Python。
+
+Rust 模式仍可能由 Python 处理 HLS、特殊分片、直连分流或依赖 Python 会话的请求。
+“播放链路诊断”显示当前保留窗口中的请求数、失败/取消数及首块 P50/P95。
+点击“导出性能诊断包”下载运行配置、资源快照、日志队列状态、统计和最多 2000 条脱敏事件。
+已有“导出脱敏日志”仍提供 JSONL。长测需要同时保留容器数据卷中的轮转日志，不能把窗口当完整历史。
+
+| 数据 | 用途及口径 |
+| --- | --- |
+| `run_id`、`version`、`engine_generation` | 区分启动批次、版本和切换前后，不把旧流归到新配置 |
+| `trace_id`、`parent_trace`、`asset` | 关联插件取链与后续媒体请求；asset 是登记键，不是原始地址 |
+| `selected_engine`、`engine`、`route_reason` | 选择模式、实际交付引擎及分流原因 |
+| `control_ms`、`upstream_headers_ms`、`first_body_ms` | 交接、上游头及首块的累计耗时；不能相加，也不是播放器起播时间 |
+| `media.ingress_closed` | Python 流在固定 Rust 入口的完整转发观测；与同 trace 的 Python 事件对照，避免漏算额外一跳 |
+| `body_read_wait_ms`、`max_body_read_wait_ms` | 累计及最大迭代读取等待，包含调度/处理，不等同纯源站网络耗时 |
+| `downstream_wait_ms` | Python 等待 ASGI send 的时间，不代表客户端已消费 |
+| `downstream_poll_gap_ms` | Rust yield 到下次轮询的间隔，含调度和背压，不是与 ASGI send 完全等价的指标 |
+| `range_start/end/suffix`、`response_range_start/end` | 拖动与大文件 Range 的数值范围，不记录任意请求头 |
+| `chunks`、`first_body_size`、`max_chunk_size`、`bytes` | 正文交付与块粒度，不代表客户端确认接收的字节 |
+| `media.started/progress/closed`、`reason` | 开始、约每 10 秒有数据推进时的汇总、完成/断连/上游错误 |
+| `runtime.resources` | CPU 累计、内存、活跃流、Worker、事件循环延迟及日志丢弃；CPU 速率需用相邻累计差计算 |
+
+引擎设置与 Python 日志队列：`/t4/api/diagnostics/media-engine`；
+Rust 原生计数与日志队列：`/t4/api/diagnostics/relay`；诊断包：`/t4/api/diagnostics/bundle`。
+统计按启动批次、实际引擎与配置代次分组，百分位只使用成功完成请求；失败/取消单列。
+Web 流计数来自日志事件，Rust 队列丢失事件时可能不完整；Rust 当前活跃流以诊断包中 `relay.active` 为准。
+自然使用日志不自动构成 A/B 证据：比较性能仍需同媒体、同 Range、同客户端、同并发和交替轮次。
+日志不记录签名网址、Cookie 或鉴权头。选用 Rust 不代表保证更快；不满意可随时回切 Python。
+
+Web 切回 Python 仍经过固定入口。需要移除这一跳时，按部署指南使用直启 Python，
+此时 Web 的 Rust 选项不可用。不能把“选择 Python”理解为自动恢复旧版单进程性能。
+
 ## 客户端可选增强
 
-服务端媒体引擎与客户端增强是两件事。自 0.3.17 起，管理台顶部显示当前
-Python 或 Rust 媒体引擎；切换方式见[部署指南](NAS_DEPLOYMENT.md#媒体引擎选择)。
-Rust 模式仍可能由 Python 处理 HLS、特殊分片、直连分流或依赖 Python 会话的请求。
-在“播放链路诊断”打开实时日志或导出日志，按 `media.closed` 的 `engine`、
-`first_body_ms`、`duration_ms`、`bytes`、`mib_per_s` 和 `reason` 检查实际路径。
-首包时间是对应服务端交付路径的观测值，不等于客户端起播时间；吞吐受客户端读取速度影响。
-Rust 的 `control_ms` 单列内部交接耗时，并包含在该请求首包和总耗时内。
-Rust 引擎状态 `/t4/api/diagnostics/media-engine` 提供活跃流、累计字节和日志丢弃计数。
-日志不记录签名网址、Cookie 或鉴权头。选用 Rust 不代表保证更快；不满意可随时回切 Python。
+服务端媒体引擎与以下客户端增强是两件事。
 
 **自 0.3.15 起，订阅正文与可选组件分离。**
 

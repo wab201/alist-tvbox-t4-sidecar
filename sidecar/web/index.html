@@ -19,6 +19,13 @@
     header, .section-head, .source-head, .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     header { margin-bottom: 12px; } .muted, .badge { color: var(--muted); }
     .badge, .plugin-id { font-size: 12px; overflow-wrap: anywhere; }
+    header { flex-wrap: wrap; }
+    .engine-options { display: inline-flex; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 5px; }
+    .engine-options label { display: flex; align-items: center; gap: 8px; padding: 9px 14px; min-height: 40px; cursor: pointer; }
+    .engine-options label:has(input:checked) { background: #eaf6ef; color: var(--ok); }
+    .engine-options input { width: 16px; min-height: 16px; margin: 0; }
+    #engine-status, #media-log-status { margin-top: 8px; overflow-wrap: anywhere; }
+    .media-table { min-width: 580px; }
     section { border-top: 1px solid var(--line); padding: 22px 0; }
     .section-head { margin-bottom: 14px; }
     input, select, button { font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 5px; background: var(--panel); }
@@ -121,6 +128,17 @@
     <span id="media-engine" class="badge"></span>
   </header>
   <div id="status" class="status muted" role="status" aria-live="polite">正在加载</div>
+  <section aria-labelledby="engine-heading">
+    <div class="section-head">
+      <h2 id="engine-heading">媒体引擎</h2>
+      <button id="refresh-engine" class="icon" title="刷新引擎状态" aria-label="刷新引擎状态"><img src="/t4/assets/icons/refresh-cw.svg" alt=""></button>
+    </div>
+    <fieldset class="engine-options" aria-label="媒体引擎" disabled>
+      <label><input type="radio" name="media-engine" value="python">Python</label>
+      <label><input type="radio" name="media-engine" value="rust">Rust（实验）</label>
+    </fieldset>
+    <div id="engine-status" class="muted" role="status" aria-live="polite">正在读取</div>
+  </section>
   <section aria-labelledby="subscription-heading">
     <div class="section-head">
       <h2 id="subscription-heading">影视订阅</h2>
@@ -208,7 +226,9 @@
     <pre id="gate-evidence" class="snapshot" hidden></pre>
   </section>
   <section aria-labelledby="diagnostics-heading">
-    <div class="section-head"><h2 id="diagnostics-heading">播放链路诊断</h2><span id="diagnostic-state" class="badge">待检查</span></div>
+    <div class="section-head"><h2 id="diagnostics-heading">播放链路诊断</h2><div class="row-actions"><span id="diagnostic-state" class="badge">待检查</span><button id="export-performance" class="icon" title="导出性能诊断包" aria-label="导出性能诊断包"><img src="/t4/assets/icons/arrow-down.svg" alt=""></button></div></div>
+    <div class="gate-table-wrap"><table class="gate-table media-table"><thead><tr><th>实际引擎 / 配置代次</th><th>请求</th><th>失败 / 取消</th><th>首块 P50 / P95（ms）</th><th>控制面 P95（ms）</th></tr></thead><tbody id="media-summary"></tbody></table></div>
+    <div id="media-log-status" class="badge" role="status"></div>
     <div class="diagnostic-controls">
       <label>订阅<select id="diagnostic-source"></select></label>
       <label>插件<select id="diagnostic-plugin"></select></label>
@@ -268,6 +288,39 @@
   let profileDialogResolve = null;
   const selectedSites = new Map();
   const diagnosticSources = new Map();
+  let engineState = null;
+  let engineSaving = false;
+  function renderEngine(state) {
+    engineState = state;
+    $(".engine-options").disabled = engineSaving;
+    for (const input of document.querySelectorAll('input[name="media-engine"]')) {
+      input.checked = input.value === state.engine;
+      input.disabled = engineSaving || (input.value === "rust" && !state.rust_available);
+    }
+    $("#media-engine").textContent = `媒体引擎：${state.engine === "rust" ? "Rust（实验）" : "Python"}`;
+    $("#engine-status").textContent = `配置代次 ${state.generation} · ${state.hot_switch ? "热切换就绪" : "Rust 未加载"}`;
+  }
+  async function loadEngine() {
+    renderEngine(await request("/t4/api/diagnostics/media-engine"));
+  }
+  $("#refresh-engine").onclick = () => loadEngine().catch(error => setStatus(error.message, "error"));
+  $(".engine-options").onchange = async event => {
+    if (engineSaving || !engineState || event.target.value === engineState.engine) return;
+    const engine = event.target.value;
+    engineSaving = true;
+    renderEngine(engineState);
+    $("#refresh-engine").disabled = true;
+    try {
+      const state = await request("/t4/api/diagnostics/media-engine", jsonOptions("PUT", {engine}));
+      engineState = state;
+      setStatus(`已切换为 ${state.engine === "rust" ? "Rust" : "Python"}`, "ok");
+    } catch (error) { setStatus(error.message, "error"); }
+    finally {
+      engineSaving = false;
+      renderEngine(engineState);
+      $("#refresh-engine").disabled = false;
+    }
+  };
   const gateNames = {pass: "通过", fail: "失败", blocked: "受阻", unsupported: "不适用", not_tested: "未测试"};
   const gateTypes = {builtin: "AT 内置", official_t4: "AT 远程插件", official_remote_plugin: "AT 远程插件", raw_python: "Python", secspider: "加密插件", javascript: "JavaScript",
     title_search_navigation: "片单导航", native_client_passthrough: "原生客户端", page_entry_only: "页面入口",
@@ -393,6 +446,27 @@
       const {time, stage, trace_id, ...fields} = event;
       return `${new Date(time * 1000).toLocaleTimeString()} ${stage} [${trace_id}]\n${JSON.stringify(fields)}`;
     }).join("\n\n") || "暂无链路记录";
+    const summary = await request(`/t4/api/diagnostics/media-summary?trace=${encodeURIComponent(trace)}`);
+    const rows = $("#media-summary");
+    rows.replaceChildren();
+    for (const group of summary.groups || []) {
+      const row = document.createElement("tr");
+      const first = group.timings.first_body_ms;
+      const control = group.timings.control_ms;
+      for (const text of [`${group.engine} / ${group.engine_generation ?? "-"}`,
+        group.requests, group.failed_or_cancelled,
+        first ? `${first.p50.toFixed(2)} / ${first.p95.toFixed(2)}` : "-",
+        control ? control.p95.toFixed(2) : "-"]) {
+        const cell = document.createElement("td"); cell.textContent = text; row.append(cell);
+      }
+      rows.append(row);
+    }
+    if (!rows.children.length) {
+      const row = document.createElement("tr"), cell = document.createElement("td");
+      cell.colSpan = 5; cell.textContent = "暂无媒体样本"; row.append(cell); rows.append(row);
+    }
+    const logging = summary.logging;
+    $("#media-log-status").textContent = `窗口记录 ${summary.events} · 流计数（日志估计）Python ${summary.streams.python.active} / Rust ${summary.streams.rust.active} · 日志队列 ${logging.pending}/${logging.capacity} · 丢弃 ${logging.dropped} · 写入错误 ${logging.write_errors}`;
   }
   $("#refresh-traces").onclick = () => loadTraces().catch(error => setStatus(error.message, "error"));
   $("#trace-filter").onchange = $("#refresh-traces").onclick;
@@ -407,6 +481,12 @@
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
+  };
+  $("#export-performance").onclick = () => {
+    const anchor = document.createElement("a");
+    anchor.href = `/t4/api/diagnostics/bundle?trace=${encodeURIComponent($("#trace-filter").value.trim())}`;
+    anchor.download = "t4-performance-bundle.json";
+    document.body.append(anchor); anchor.click(); anchor.remove();
   };
   $("#check-playback").onclick = async () => {
     const keyword = $("#diagnostic-keyword").value.trim();
@@ -1062,6 +1142,7 @@
       const health = await request("/t4/health");
       $("#health").textContent = `${health.status} · ${health.version}`;
       $("#media-engine").textContent = health.media_engine === "rust" ? "媒体引擎：Rust（实验）" : "媒体引擎：Python";
+      await loadEngine();
       await loadAll();
     } catch (error) { $("#health").textContent = "不可用"; setStatus(error.message, "error"); }
   })();

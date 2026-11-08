@@ -87,6 +87,7 @@ impl AsyncLog {
                 let counter = match reason {
                     "complete" => &self.counters.log_dropped_complete,
                     "upstream_error" => &self.counters.log_dropped_error,
+                    "progress" => &self.counters.log_dropped_observation,
                     _ => &self.counters.log_dropped_cancelled,
                 };
                 counter.fetch_add(1, Ordering::Relaxed);
@@ -115,13 +116,19 @@ mod tests {
         };
         logger.submit(json!({"request": 1}), None, "complete");
         logger.submit(json!({"request": 2}), None, "complete");
-        for reason in ["complete", "upstream_error", "client_disconnect"] {
+        for reason in [
+            "complete",
+            "upstream_error",
+            "client_disconnect",
+            "progress",
+        ] {
             logger.submit(json!({"request": 3}), None, reason);
         }
         assert_eq!(counters.log_pending.load(Ordering::Relaxed), 2);
         assert_eq!(counters.log_dropped_complete.load(Ordering::Relaxed), 1);
         assert_eq!(counters.log_dropped_error.load(Ordering::Relaxed), 1);
         assert_eq!(counters.log_dropped_cancelled.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.log_dropped_observation.load(Ordering::Relaxed), 1);
         assert_eq!(receiver.try_iter().count(), 2);
         drop(receiver);
         logger.submit(json!({}), None, "upstream_error");

@@ -43,6 +43,7 @@ class MediaResponse(ManagedStreamingResponse):
                     asset, request.method, dict(request.headers), redirect=True,
                 )
                 upstream = self.upstream
+                self.upstream_headers_ms = self.elapsed_ms()
                 names = ["content-type", "content-length", "content-range", "accept-ranges",
                          "retry-after"]
                 if asset.kind != "segment":

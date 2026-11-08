@@ -26,7 +26,7 @@ from tests.unit.test_media_disconnect import serving, wait_for
 
 @pytest.fixture(params=["python", "rust"])
 def gateway(request, tmp_path):
-    if request.param == "rust" and not binary_path().is_file():
+    if not binary_path().is_file():
         pytest.skip("build Rust release binary first")
     with serving(origin_app()) as origin:
         with socket.socket() as sock:
@@ -184,12 +184,9 @@ def test_engine_validation_and_logs_are_metadata_only(monkeypatch):
 def test_engine_process_ownership_and_fail_stop(gateway):
     engine, _, _, _, _, _, process = gateway
     children = psutil.Process(process.pid).children()
-    if engine == "python":
-        assert children == []
-    else:
-        assert len(children) == 1
-        children[0].terminate()
-        assert process.wait(15) == 1
+    assert len(children) == 1
+    children[0].terminate()
+    assert process.wait(15) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows terminate is not POSIX SIGTERM")

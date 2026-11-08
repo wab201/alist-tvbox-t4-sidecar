@@ -100,6 +100,7 @@ struct Counters {
     log_dropped_complete: AtomicU64,
     log_dropped_error: AtomicU64,
     log_dropped_cancelled: AtomicU64,
+    log_dropped_observation: AtomicU64,
     log_disconnected: AtomicU64,
 }
 
@@ -185,8 +186,8 @@ struct Transfer {
     bytes: u64,
     status: u16,
     reason: &'static str,
-    upstream_headers_ms: Option<u128>,
-    first_body_ms: Option<u128>,
+    upstream_headers_ms: Option<f64>,
+    first_body_ms: Option<f64>,
     handler_us: Option<u64>,
     upstream_request_us: Option<u64>,
     upstream_headers_us: Option<u64>,
@@ -214,7 +215,61 @@ struct Transfer {
     parent_trace: String,
     method: String,
     range: bool,
-    control_ms: Option<u128>,
+    control_ms: Option<f64>,
+    metadata: Value,
+    active_at_start: u64,
+    response_ready_ms: Option<f64>,
+    read_started: Option<Instant>,
+    yield_started: Option<Instant>,
+    body_read_wait_ms: f64,
+    max_body_read_wait_ms: f64,
+    downstream_poll_gap_ms: f64,
+    max_downstream_poll_gap_ms: f64,
+    progress_at: Instant,
+}
+
+struct DeliveryContext {
+    trace_id: String,
+    parent_trace: String,
+    started: Instant,
+    asset: String,
+    selected_engine: String,
+    generation: u64,
+    reason: String,
+}
+
+fn add_range_metadata(metadata: &mut Value, headers: &HeaderMap) {
+    metadata["range_kind"] = json!(if headers.contains_key("range") {
+        "other"
+    } else {
+        "none"
+    });
+    let Some(value) = headers.get("range").and_then(|v| v.to_str().ok()) else {
+        return;
+    };
+    let Some((start, end)) = value
+        .trim()
+        .strip_prefix("bytes=")
+        .and_then(|v| v.split_once('-'))
+    else {
+        return;
+    };
+    match (start.parse::<u64>(), end.parse::<u64>()) {
+        (Ok(start), Ok(end)) => {
+            metadata["range_kind"] = json!("bounded");
+            metadata["range_start"] = json!(start);
+            metadata["range_end"] = json!(end);
+        }
+        (Ok(start), _) if end.is_empty() => {
+            metadata["range_kind"] = json!("open");
+            metadata["range_start"] = json!(start);
+        }
+        (_, Ok(end)) if start.is_empty() => {
+            metadata["range_kind"] = json!("suffix");
+            metadata["range_suffix"] = json!(end);
+        }
+        _ => {}
+    }
 }
 
 fn unix_us() -> u64 {
@@ -226,7 +281,7 @@ fn unix_us() -> u64 {
 
 impl Transfer {
     fn new(counters: Arc<Counters>, client_trace: Option<String>) -> Self {
-        counters.active.fetch_add(1, Ordering::Relaxed);
+        let active_at_start = counters.active.fetch_add(1, Ordering::Relaxed) + 1;
         let id = counters.requests.fetch_add(1, Ordering::Relaxed) + 1;
         let handler_us = client_trace.as_ref().map(|_| unix_us());
         Self {
@@ -267,11 +322,22 @@ impl Transfer {
             method: String::new(),
             range: false,
             control_ms: None,
+            metadata: json!({}),
+            active_at_start,
+            response_ready_ms: None,
+            read_started: None,
+            yield_started: None,
+            body_read_wait_ms: 0.0,
+            max_body_read_wait_ms: 0.0,
+            downstream_poll_gap_ms: 0.0,
+            max_downstream_poll_gap_ms: 0.0,
+            progress_at: Instant::now(),
         }
     }
 
     fn mark_upstream_headers(&mut self, opened: &Opened) {
-        self.upstream_headers_ms = Some(opened.headers_at.duration_since(self.started).as_millis());
+        self.upstream_headers_ms =
+            Some(opened.headers_at.duration_since(self.started).as_secs_f64() * 1000.0);
         if self.client_trace.is_some() {
             self.upstream_headers_us = Some(opened.headers_us);
         }
@@ -281,7 +347,7 @@ impl Transfer {
         if self.first_body_ms.is_none() {
             self.admission = None;
             self.startup = None;
-            self.first_body_ms = Some(self.started.elapsed().as_millis());
+            self.first_body_ms = Some(self.started.elapsed().as_secs_f64() * 1000.0);
             if self.client_trace.is_some() {
                 self.first_body_us = Some(unix_us());
             }
@@ -290,10 +356,12 @@ impl Transfer {
 
     fn progress(&mut self, bytes: usize) {
         self.bytes += bytes as u64;
-        if self.client_trace.is_some() {
-            self.chunks += 1;
-            self.first_body_size.get_or_insert(bytes);
-            self.max_chunk_size = self.max_chunk_size.max(bytes);
+        self.chunks += 1;
+        self.first_body_size.get_or_insert(bytes);
+        self.max_chunk_size = self.max_chunk_size.max(bytes);
+        if !self.trace_id.is_empty() && self.progress_at.elapsed() >= Duration::from_secs(10) {
+            self.emit_sample("relay.progress");
+            self.progress_at = Instant::now();
         }
     }
 
@@ -309,10 +377,52 @@ impl Transfer {
         self.startup = None;
         self.reason = reason;
     }
+
+    fn read_finished(&mut self) {
+        if let Some(started) = self.read_started.take() {
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            self.body_read_wait_ms += elapsed;
+            self.max_body_read_wait_ms = self.max_body_read_wait_ms.max(elapsed);
+        }
+    }
+
+    fn poll_resumed(&mut self) {
+        if let Some(started) = self.yield_started.take() {
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            self.downstream_poll_gap_ms += elapsed;
+            self.max_downstream_poll_gap_ms = self.max_downstream_poll_gap_ms.max(elapsed);
+        }
+    }
+
+    fn sample(&self, stage: &str) -> Value {
+        let mut event = self.metadata.clone();
+        event.as_object_mut().unwrap().extend(json!({
+            "event": stage, "engine": "rust", "trace_id": self.trace_id,
+            "parent_trace": self.parent_trace, "method": self.method, "range": self.range,
+            "status": self.status, "bytes": self.bytes,
+            "duration_ms": self.started.elapsed().as_secs_f64() * 1000.0,
+            "first_body_ms": self.first_body_ms, "upstream_headers_ms": self.upstream_headers_ms,
+            "control_ms": self.control_ms, "response_ready_ms": self.response_ready_ms,
+            "chunks": self.chunks, "first_body_size": self.first_body_size,
+            "max_chunk_size": self.max_chunk_size, "active_at_start": self.active_at_start,
+            "body_read_wait_ms": self.body_read_wait_ms, "max_body_read_wait_ms": self.max_body_read_wait_ms,
+            "downstream_poll_gap_ms": self.downstream_poll_gap_ms,
+            "max_downstream_poll_gap_ms": self.max_downstream_poll_gap_ms,
+        }).as_object().unwrap().clone());
+        event
+    }
+
+    fn emit_sample(&self, stage: &str) {
+        if let Some(logger) = &self.logger {
+            logger.submit(self.sample(stage), None, "progress");
+        }
+    }
 }
 
 impl Drop for Transfer {
     fn drop(&mut self) {
+        self.read_finished();
+        self.poll_resumed();
         self.admission = None;
         self.counters.active.fetch_sub(1, Ordering::Relaxed);
         self.counters.bytes.fetch_add(self.bytes, Ordering::Relaxed);
@@ -345,6 +455,10 @@ impl Drop for Transfer {
             "upstream_headers_ms": self.upstream_headers_ms,
             "control_ms": self.control_ms,
         });
+        event
+            .as_object_mut()
+            .unwrap()
+            .extend(self.sample("relay.closed").as_object().unwrap().clone());
         if let Some(trace) = self.client_trace.as_ref() {
             event["client_trace"] = Value::String(trace.clone());
             event["upstream_headers_ms"] = self
@@ -428,6 +542,7 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
             "dropped_complete": c.log_dropped_complete.load(Ordering::Relaxed),
             "dropped_upstream_error": c.log_dropped_error.load(Ordering::Relaxed),
             "dropped_cancelled": c.log_dropped_cancelled.load(Ordering::Relaxed),
+            "dropped_observation": c.log_dropped_observation.load(Ordering::Relaxed),
             "disconnected": c.log_disconnected.load(Ordering::Relaxed),
         },
         "runtime_observation": app.observe_startup.then(|| json!({
@@ -472,7 +587,7 @@ async fn deliver(
     asset: Arc<Asset>,
     method: Method,
     request_headers: HeaderMap,
-    context: Option<(String, String, Instant)>,
+    context: Option<DeliveryContext>,
 ) -> Response {
     let client_trace = if app.trace {
         request_headers
@@ -492,14 +607,20 @@ async fn deliver(
     let mut transfer = Transfer::new(Arc::clone(&app.counters), client_trace);
     transfer.method = method.to_string();
     transfer.range = request_headers.contains_key("range");
-    if let Some((trace_id, parent_trace, started)) = context {
-        transfer.trace_id = trace_id;
-        transfer.parent_trace = parent_trace;
-        transfer.control_ms = Some(started.elapsed().as_millis());
-        transfer.started = started;
+    if let Some(context) = context {
+        transfer.trace_id = context.trace_id;
+        transfer.parent_trace = context.parent_trace;
+        transfer.control_ms = Some(context.started.elapsed().as_secs_f64() * 1000.0);
+        transfer.started = context.started;
+        transfer.metadata = json!({"asset": context.asset, "selected_engine": context.selected_engine,
+            "engine_generation": context.generation, "route_reason": context.reason});
     }
     transfer.observe_log = app.observe_log;
     transfer.logger = app.logger.clone();
+    add_range_metadata(&mut transfer.metadata, &request_headers);
+    if !transfer.trace_id.is_empty() {
+        transfer.emit_sample("relay.started");
+    }
     if app.observe_startup
         && transfer.client_trace.is_some()
         && request_headers
@@ -585,6 +706,24 @@ async fn deliver(
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
+    if let Some(length) = expected {
+        transfer.metadata["expected_bytes"] = json!(length);
+    }
+    if let Some(value) = upstream
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        && let Some((range, total)) = value.strip_prefix("bytes ").and_then(|v| v.split_once('/'))
+        && let Some((start, end)) = range.split_once('-')
+        && let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>())
+    {
+        transfer.metadata["response_range_start"] = json!(start);
+        transfer.metadata["response_range_end"] = json!(end);
+        if let Ok(total) = total.parse::<u64>() {
+            transfer.metadata["resource_bytes"] = json!(total);
+        }
+    }
+    transfer.response_ready_ms = Some(transfer.started.elapsed().as_secs_f64() * 1000.0);
     if transfer.client_trace.is_some() {
         transfer.response_ready_us = Some(unix_us());
     }
@@ -622,7 +761,10 @@ async fn deliver(
             let mut startup_turn_bytes = 0;
             loop {
                 let observation = if first { transfer.body_observation.clone() } else { None };
-                let Some(chunk) = observed(chunks.next(), observation.as_ref()).await else { break; };
+                transfer.read_started = Some(Instant::now());
+                let chunk = observed(chunks.next(), observation.as_ref()).await;
+                transfer.read_finished();
+                let Some(chunk) = chunk else { break; };
                 match chunk {
                     Ok(mut bytes) => {
                         transfer.read_chunk(bytes.len());
@@ -644,7 +786,9 @@ async fn deliver(
                             if expected == Some(transfer.bytes) {
                                 transfer.finish("complete");
                             }
+                            transfer.yield_started = Some(Instant::now());
                             yield Ok::<_, io::Error>(frame);
+                            transfer.poll_resumed();
                             if first {
                                 first = false;
                                 if app.yield_after_first_body {
@@ -887,7 +1031,7 @@ async fn run() -> Result<(), &'static str> {
     });
     let router = if app.gateway.is_some() {
         Router::new()
-            .route("/t4/api/diagnostics/media-engine", get(health))
+            .route("/t4/api/diagnostics/relay", get(health))
             .fallback(gateway::forward)
     } else {
         Router::new().route("/health", get(health)).route(

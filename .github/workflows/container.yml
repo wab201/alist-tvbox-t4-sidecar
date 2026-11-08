@@ -137,6 +137,21 @@ jobs:
           curl --fail --silent http://127.0.0.1:18765/t4/assets/icons/save.svg > /dev/null
           curl --fail --silent http://127.0.0.1:18765/t4/config.json | python -c \
             "import json,sys; assert json.load(sys.stdin)=={'sites':[]}"
+          curl --fail --silent -X PUT -H 'Content-Type: application/json' \
+            -d '{"engine":"rust"}' http://127.0.0.1:18765/t4/api/diagnostics/media-engine | python -c \
+            "import json,sys; d=json.load(sys.stdin); assert d['engine']=='rust' and d['generation']==1 and d['hot_switch']"
+          docker restart t4-image-smoke
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18765/t4/health; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18765/t4/api/diagnostics/media-engine | python -c \
+            "import json,sys; d=json.load(sys.stdin); assert d['engine']=='rust' and d['generation']==1"
+          curl --fail --silent -X PUT -H 'Content-Type: application/json' \
+            -d '{"engine":"python"}' http://127.0.0.1:18765/t4/api/diagnostics/media-engine | python -c \
+            "import json,sys; d=json.load(sys.stdin); assert d['engine']=='python' and d['generation']==2"
+          curl --fail --silent http://127.0.0.1:18765/t4/api/diagnostics/bundle | python -c \
+            "import json,sys; d=json.load(sys.stdin); assert d['schema']==2 and d['logging']['async'] and d['relay']['logging']['async']"
           docker rm -f t4-image-smoke
           docker run -d --name t4-image-smoke -e T4_MEDIA_ENGINE=rust -p 127.0.0.1:18765:8765 "$tag"
           for attempt in $(seq 1 30); do

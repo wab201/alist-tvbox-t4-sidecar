@@ -21,6 +21,15 @@ def resource_snapshot() -> dict:
     except (OSError, ValueError, KeyError):
         pass
     try:
+        values = dict(line.split() for line in (root / "cpu.stat").read_text().splitlines())
+        for source, field in (("usage_usec", "cpu_usage_us"), ("throttled_usec", "cpu_throttled_us"),
+                              ("nr_throttled", "cpu_throttled_periods")):
+            if source in values:
+                result[field] = int(values[source])
+    except (OSError, ValueError):
+        pass
+    result["gateway_cpu_ms"] = round(time.process_time() * 1000, 3)
+    try:
         values = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
         result["gateway_rss_bytes"] = int(values["VmRSS"].split()[0]) * 1024
         result["threads"] = int(values["Threads"].strip())

@@ -19,6 +19,7 @@ from sidecar.gateway.routes.subscriptions import (
 )
 from sidecar.gateway.source_registry import SourceConfig, SourceRegistry
 from sidecar.gateway.playback_settings import PlaybackSettingsStore
+from sidecar.gateway.media_settings import MediaEngineSettings
 from sidecar.gateway.navigation_settings import NavigationSettingsStore
 from sidecar.gateway.routes.t4 import build_t4_router
 from sidecar.gateway.routes.web import build_web_router
@@ -54,7 +55,10 @@ def create_app(
     t4_adapter: T4Adapter | None = None,
 ) -> FastAPI:
     runtime_settings = settings or Settings.from_env()
-    trace_store = TraceStore(runtime_settings.log_file)
+    trace_store = TraceStore(runtime_settings.log_file, version=runtime_settings.version)
+    media_engine = MediaEngineSettings(
+        Path(runtime_settings.plugin_dir) / "media-engine.json", runtime_settings.media_engine, trace_store,
+    )
     proxies = PluginProxyRegistry()
     playback = PlaybackBridge(proxy_registry=proxies)
     images = ImageBridge()
@@ -158,14 +162,29 @@ def create_app(
     )
     memory = IdleMemory()
     maintenance_stop = asyncio.Event()
+    loop_samples = {"loop_lag_ms": 0.0, "loop_lag_max_ms": 0.0, "loop_samples": 0}
     adapters = (runtime_adapter,) if gate_adapter is runtime_adapter else (runtime_adapter, gate_adapter)
 
     def resources():
         summary = worker_pool.resource_summary() if worker_pool is not None else {}
         return {
-            **resource_snapshot(), **summary,
+            **resource_snapshot(), **summary, **loop_samples,
             "gate_workers": gate_pool.resource_summary()["workers"],
+            "active": sum(item["active"] for item in trace_store.media_status().values()),
+            **{"log_" + key: trace_store.output_status()[key] for key in ("dropped", "pending", "write_errors")},
         }
+
+    async def measure_loop():
+        while not maintenance_stop.is_set():
+            started = time.monotonic()
+            try:
+                await asyncio.wait_for(maintenance_stop.wait(), timeout=1)
+                return
+            except TimeoutError:
+                lag = max(0.0, (time.monotonic() - started - 1) * 1000)
+                loop_samples["loop_samples"] += 1
+                loop_samples["loop_lag_ms"] = round(lag, 3)
+                loop_samples["loop_lag_max_ms"] = round(max(loop_samples["loop_lag_max_ms"], lag), 3)
 
     def reclaim_resources():
         for pool in (worker_pool, gate_pool):
@@ -208,13 +227,16 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        trace_store.start_output()
         trace_store.emit("runtime.started", version=runtime_settings.version, **resources())
         maintenance = asyncio.create_task(memory_maintenance())
+        loop_monitor = asyncio.create_task(measure_loop())
         try:
             yield
         finally:
             maintenance_stop.set()
             await maintenance
+            await loop_monitor
             await compatibility.close()
             for adapter in adapters:
                 if isinstance(adapter, T4Adapter):
@@ -243,6 +265,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.traces = trace_store
+    app.state.media_engine = media_engine
     app.state.playback = playback
     app.state.images = images
     app.state.compatibility = compatibility
@@ -253,14 +276,14 @@ def create_app(
     app.include_router(build_acceleration_router(acceleration))
     app.include_router(build_plugin_proxy_router(proxies, proxy_client))
     app.include_router(build_images_router(images))
-    app.add_middleware(TraceMiddleware, store=trace_store)
+    app.add_middleware(TraceMiddleware, store=trace_store, media_engine=media_engine)
     app.add_middleware(ResourceActivityMiddleware, memory=memory)
     app.add_middleware(ClientCORSMiddleware)
     app.include_router(build_diagnostics_router(
-        trace_store, playback, runtime_adapter, resources=resources,
+        trace_store, playback, runtime_adapter, resources=resources, engines=media_engine,
     ))
     app.include_router(build_compatibility_router(compatibility))
-    app.include_router(build_health_router(runtime_settings))
+    app.include_router(build_health_router(runtime_settings, media_engine, trace_store))
     async def navigation_snapshot(source):
         return upload_store.snapshot_for(source.source_id) or await subscription_resolver.resolve(source)
 

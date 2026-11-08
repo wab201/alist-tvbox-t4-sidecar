@@ -7,12 +7,8 @@ import json
 import os
 import shutil
 import socket
-import sys
 
 import uvicorn
-
-from sidecar.gateway.config import Settings
-
 
 def relay_event(store, line: bytes) -> None:
     try:
@@ -20,22 +16,30 @@ def relay_event(store, line: bytes) -> None:
     except (ValueError, UnicodeError):
         store.emit("media.relay_log_invalid", engine="rust")
         return
-    if not isinstance(event, dict) or event.get("event") != "relay.closed":
+    if not isinstance(event, dict) or event.get("event") not in {"relay.closed", "relay.started", "relay.progress", "relay.forwarded"}:
         return
     fields = {name: event[name] for name in (
         "status", "bytes", "duration_ms", "reason", "first_body_ms", "upstream_headers_ms",
         "parent_trace", "method", "range", "control_ms",
+        "asset", "selected_engine", "engine_generation", "route_reason", "response_ready_ms",
+        "first_body_size", "chunks", "max_chunk_size", "body_read_wait_ms", "max_body_read_wait_ms",
+        "downstream_poll_gap_ms", "max_downstream_poll_gap_ms", "active_at_start",
+        "range_kind", "range_start", "range_end", "range_suffix", "expected_bytes",
+        "response_range_start", "response_range_end", "resource_bytes",
     ) if name in event and isinstance(event[name], (str, int, float, bool))}
     count, duration = fields.get("bytes", 0), fields.get("duration_ms", 0)
     if isinstance(count, (int, float)) and isinstance(duration, (int, float)):
         fields["mib_per_s"] = round(count / 1048576 / max(duration / 1000, .001), 3)
-    store.emit("media.closed", trace_id=event.get("trace_id", ""), engine="rust", **fields)
+    fields = {key: round(value, 3) if isinstance(value, float) else value for key, value in fields.items()}
+    forwarded = event["event"] == "relay.forwarded"
+    store.emit("media.ingress_closed" if forwarded else event["event"].replace("relay.", "media."),
+               trace_id=event.get("trace_id", ""), engine="python" if forwarded else "rust", **fields)
 
 
 async def serve_rust(app, *, host: str, port: int, binary: str) -> int:
     from sidecar.gateway.media_engine import build_media_engine_router
 
-    app.include_router(build_media_engine_router(app.state.playback))
+    app.include_router(build_media_engine_router(app.state.playback, app.state.media_engine))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     sock.listen(128)
@@ -90,7 +94,13 @@ async def serve_rust(app, *, host: str, port: int, binary: str) -> int:
         ready = json.loads(await asyncio.wait_for(process.stdout.readline(), 10))
         if not isinstance(ready, dict) or ready.get("event") != "ready":
             raise ValueError("relay not ready")
-        app.state.traces.emit("runtime.media_engine", engine="rust", reason="ready")
+        app.state.media_engine.available = True
+        local_host = "127.0.0.1" if host == "0.0.0.0" else host
+        app.state.media_engine.relay_url = f"http://{local_host}:{port}/t4/api/diagnostics/relay"
+        choice = app.state.media_engine.snapshot()
+        app.state.traces.emit("runtime.media_engine", engine=choice["engine"], backend="rust",
+                              selected_engine=choice["selected_engine"],
+                              engine_generation=choice["generation"], reason="ready")
 
         async def collect():
             while line := await process.stdout.readline():
@@ -118,16 +128,12 @@ async def serve_rust(app, *, host: str, port: int, binary: str) -> int:
 
 
 def main() -> int:
-    settings = Settings.from_env()
     host = os.getenv("T4_BIND_HOST", "0.0.0.0")
     port = int(os.getenv("T4_BIND_PORT", "8765"))
     binary = os.getenv("T4_RUST_RELAY_BIN") or shutil.which("t4-media-relay")
-    if settings.media_engine == "rust" and not binary:
-        print("Rust media module is missing; build the bundled binary or select python", file=sys.stderr)
-        return 1
     from sidecar.gateway.main import app
 
-    if settings.media_engine == "python":
+    if not binary:
         uvicorn.run(app, host=host, port=port, access_log=False)
         return 0
     return asyncio.run(serve_rust(app, host=host, port=port, binary=binary))

@@ -4,11 +4,13 @@ import asyncio
 import json
 from typing import Any
 
+import httpx
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from sidecar.diagnostics import TraceStore, record, trace_id
+from sidecar.diagnostics import TraceStore, record, trace_id, media_summary
 from sidecar.playback import PlaybackBridge
 from sidecar.gateway.media_response import MediaResponse
 from sidecar.t4.adapter import T4Adapter, T4Request
@@ -22,13 +24,51 @@ class PlaybackCheck(BaseModel):
 
 
 def build_diagnostics_router(
-    store: TraceStore, bridge: PlaybackBridge, adapter: T4Adapter, *, resources=None,
+    store: TraceStore, bridge: PlaybackBridge, adapter: T4Adapter, *, resources=None, engines=None,
 ) -> APIRouter:
     router = APIRouter()
 
     @router.get("/t4/api/diagnostics/resources")
     async def resource_status() -> dict[str, Any]:
         return resources() if resources is not None else {}
+
+    @router.get("/t4/api/diagnostics/media-summary")
+    async def summary(trace: str = "") -> dict:
+        events = store.events(trace_id=trace, limit=2000)
+        return {"window": "retained_events", "events": len(events), "groups": media_summary(events),
+                "logging": store.output_status(), "streams": store.media_status()}
+
+    @router.get("/t4/api/diagnostics/bundle")
+    async def bundle(trace: str = "") -> Response:
+        events = store.events(trace_id=trace, limit=2000)
+        relay = None
+        relay_url = getattr(engines, "relay_url", None)
+        if relay_url:
+            try:
+                async with httpx.AsyncClient(trust_env=False, timeout=2) as client:
+                    response = await client.get(relay_url)
+                    response.raise_for_status()
+                    relay = response.json()
+            except (httpx.HTTPError, ValueError):
+                relay = {"available": False}
+        payload = {
+            "schema": 2, "version": store.version, "run_id": store.run_id,
+            "engine": engines.snapshot() if engines is not None else {},
+            "resources": resources() if resources is not None else {}, "relay": relay,
+            "logging": store.output_status(), "streams": store.media_status(),
+            "window": "last_2000_retained_events", "summary": media_summary(events), "events": events,
+            "measurement": {
+                "time_unit": "milliseconds", "bytes": "body_offered_not_client_acknowledged",
+                "first_body_ms": "server_request_to_first_body_not_player_ttfb",
+                "upstream_headers_ms": "cumulative_including_control_not_dns_tcp_tls_breakdown",
+                "downstream_wait_ms": "python_asgi_send_await",
+                "downstream_poll_gap_ms": "rust_yield_to_repoll_including_scheduler_not_socket_only",
+                "percentiles": "nearest_rank_successful_requests_not_paired_speedup",
+            },
+        }
+        return Response(json.dumps(payload, ensure_ascii=False), media_type="application/json", headers={
+            "Content-Disposition": 'attachment; filename="t4-performance-bundle.json"', "Cache-Control": "no-store",
+        })
 
     @router.get("/t4/api/diagnostics/events")
     async def events(

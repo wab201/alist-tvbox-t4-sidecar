@@ -4,7 +4,6 @@ import os
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
 
 from sidecar.diagnostics import record, trace_id
 from sidecar.playback import PlaybackBridge
@@ -42,18 +41,25 @@ def raw_asset(bridge: PlaybackBridge, key: str) -> tuple[dict | None, str]:
     }, "raw_bytes"
 
 
-def build_media_engine_router(bridge: PlaybackBridge) -> APIRouter:
+def build_media_engine_router(bridge: PlaybackBridge, engines) -> APIRouter:
     router = APIRouter()
 
     @router.get("/__t4_relay/asset/{key}", include_in_schema=False)
     async def resolve(key: str, request: Request):
         if request.client is None or request.client.host != "127.0.0.1":
             raise HTTPException(404)
-        result, reason = raw_asset(bridge, key)
+        choice = engines.snapshot()
+        asset = bridge.get(key)
+        if asset is None:
+            raise HTTPException(410, "Media expired")
+        result, reason = raw_asset(bridge, key) if choice["engine"] == "rust" else (None, "selected_python")
         record("media.engine", engine="rust" if result else "python", reason=reason,
-               parent_trace=result.get("parent_trace") if result else None)
-        if result is None:
-            return Response(status_code=204)
-        return result
+               selected_engine=choice["selected_engine"], engine_generation=choice["generation"],
+               parent_trace=asset.trace, asset=key)
+        return {
+            **(result or {}), "engine": "rust" if result else "python", "reason": reason,
+            "selected_engine": choice["selected_engine"], "generation": choice["generation"],
+            "trace_id": trace_id(), "parent_trace": asset.trace, "asset": key,
+        }
 
     return router
